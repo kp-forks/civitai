@@ -37,23 +37,17 @@ import {
   BaseModel,
   baseModelSets,
   BaseModelSetType,
-  CacheTTL,
-  constants,
   draftMode,
   getGenerationConfig,
   Sampler,
 } from '~/server/common/constants';
 import { imageGenerationSchema } from '~/server/schema/image.schema';
 import { uniqBy } from 'lodash-es';
-import { TransactionType } from '~/server/schema/buzz.schema';
-import { createBuzzTransaction, refundTransaction } from '~/server/services/buzz.service';
-import { calculateGenerationBill } from '~/server/common/generation';
 import { RecommendedSettingsSchema } from '~/server/schema/model-version.schema';
 import orchestratorCaller from '~/server/http/orchestrator/orchestrator.caller';
 import { redis, REDIS_KEYS } from '~/server/redis/client';
 import { hasEntityAccess } from '~/server/services/common.service';
 import { includesNsfw, includesPoi, includesMinor } from '~/utils/metadata/audit';
-import { bustCachedArray, cachedArray } from '~/server/utils/cache-helpers';
 import { fromJson, toJson } from '~/utils/json-helpers';
 import { extModeration } from '~/server/integrations/moderation';
 import { logToAxiom } from '~/server/logging/client';
@@ -66,6 +60,16 @@ import { SearchIndexUpdateQueueAction, GenerationRequestStatus } from '~/server/
 import { UserTier } from '~/server/schema/user.schema';
 import { Orchestrator } from '~/server/http/orchestrator/orchestrator.types';
 import { generatorFeedbackReward } from '~/server/rewards';
+import { resourceDataCache } from '~/server/redis/caches';
+import {
+  allInjectedNegatives,
+  allInjectedPositives,
+  defaultCheckpoints,
+  getBaseModelSetKey,
+  minorNegatives,
+  minorPositives,
+  safeNegatives,
+} from '~/shared/constants/generation.constants';
 
 export function parseModelVersionId(assetId: string) {
   const pattern = /^@civitai\/(\d+)$/;
@@ -77,13 +81,6 @@ export function parseModelVersionId(assetId: string) {
 
   return null;
 }
-
-// when removing a string from the `safeNegatives` array, add it to the `allSafeNegatives` array
-const safeNegatives = [{ id: 106916, triggerWord: 'civit_nsfw' }];
-const minorNegatives = [{ id: 250712, triggerWord: 'safe_neg' }];
-const minorPositives = [{ id: 250708, triggerWord: 'safe_pos' }];
-const allInjectedNegatives = [...safeNegatives, ...minorNegatives];
-const allInjectedPositives = [...minorPositives];
 
 function mapRequestStatus(label: string): GenerationRequestStatus {
   switch (label) {
@@ -243,29 +240,11 @@ export const getGenerationResources = async (
   );
 };
 
-const getResourceData = async (modelVersionIds: number[]) => {
-  return await cachedArray<GenerationResourceSelect>({
-    key: REDIS_KEYS.GENERATION.RESOURCE_DATA,
-    ids: modelVersionIds,
-    idKey: 'id',
-    lookupFn: async (ids) => {
-      const dbResults = await dbRead.modelVersion.findMany({
-        where: { id: { in: ids as number[] } },
-        select: generationResourceSelect,
-      });
-
-      const results = dbResults.reduce((acc, result) => {
-        acc[result.id] = result;
-        return acc;
-      }, {} as Record<string, GenerationResourceSelect>);
-      return results;
-    },
-    ttl: CacheTTL.hour,
-  });
-};
-
-export async function deleteResourceDataCache(modelVersionIds: number | number[]) {
-  await bustCachedArray(REDIS_KEYS.GENERATION.RESOURCE_DATA, 'id', modelVersionIds);
+function getResourceData(modelVersionIds: number[]) {
+  return resourceDataCache.fetch(modelVersionIds);
+}
+export function deleteResourceDataCache(modelVersionIds: number | number[]) {
+  return resourceDataCache.bust(modelVersionIds);
 }
 
 const baseModelSetsEntries = Object.entries(baseModelSets);
@@ -323,6 +302,9 @@ const formatGenerationRequests = async (requests: Generation.Api.RequestProps[])
         baseModel,
         negativePrompt,
         seed: params.seed === -1 ? undefined : params.seed,
+        sampler: Object.entries(samplersToSchedulers).find(
+          ([sampler, scheduler]) => scheduler === params.scheduler
+        )?.[0],
       },
       resources: assets
         .map((assetId): Generation.Resource | undefined => {
@@ -404,10 +386,15 @@ const samplersToSchedulers: Record<Sampler, string> = {
 const baseModelToOrchestration: Record<BaseModelSetType, string | undefined> = {
   SD1: 'SD_1_5',
   SD2: undefined,
+  SD3: 'SD_3',
   SDXL: 'SDXL',
   SDXLDistilled: 'SDXL_Distilled',
   SCascade: 'SCascade',
   Pony: 'SDXL',
+  Lumina: 'Lumina',
+  HyDit1: 'HyDit1',
+  PixArtA: 'PixArtA',
+  PixArtE: 'PixArtE',
   ODOR: undefined,
 };
 
@@ -470,8 +457,9 @@ const getDraftStateFromInputForOrchestrator = ({
   steps = draftModeSettings.steps;
   cfgScale = draftModeSettings.cfgScale;
   sampler = draftModeSettings.sampler;
+  const resourceId = draftModeSettings.resourceId;
 
-  return { quantity, steps, cfgScale, sampler };
+  return { quantity, steps, cfgScale, sampler, resourceId };
 };
 
 export const prepareGenerationInput = async ({
@@ -507,7 +495,6 @@ export const prepareGenerationInput = async ({
       sampler: params.sampler,
     });
 
-    const draftModeSettings = draftMode[isSDXL ? 'sdxl' : 'sd1'];
     // Fix quantity
     params.quantity = draftData.quantity;
     // Fix other params
@@ -518,7 +505,7 @@ export const prepareGenerationInput = async ({
     resources.push({
       modelType: ModelType.LORA,
       strength: 1,
-      id: draftModeSettings.resourceId,
+      id: draftData.resourceId,
     });
   }
 
@@ -603,6 +590,8 @@ export const createGenerationRequest = async ({
   userTier?: UserTier;
   isModerator?: boolean;
 }) => {
+  if (resources.length === 0) throw throwBadRequestError('No resources provided');
+
   // Handle generator disabled
   const status = await getGenerationStatus();
   if (!status.available && !isModerator)
@@ -621,7 +610,8 @@ export const createGenerationRequest = async ({
   const limits = status.limits[userTier ?? 'free'];
   if (params.quantity > limits.quantity) params.quantity = limits.quantity;
   if (params.steps > limits.steps) params.steps = limits.steps;
-  if (resources.length > limits.resources)
+  // +1 for the checkpoint
+  if (resources.length > limits.resources + 1)
     throw throwBadRequestError('You have exceeded the resources limit.');
 
   // This is disabled for now, because it performs so poorly...
@@ -634,9 +624,6 @@ export const createGenerationRequest = async ({
   //   throw throwRateLimitError(
   //     'You have too many pending generation requests. Try again when some are completed.'
   //   );
-
-  if (!resources || resources.length === 0) throw throwBadRequestError('No resources provided');
-  if (resources.length > 10) throw throwBadRequestError('Too many resources provided');
 
   // Handle Draft Mode
   const isSDXL =
@@ -708,9 +695,14 @@ export const createGenerationRequest = async ({
   const isPromptNsfw = includesNsfw(params.prompt);
   nsfw ??= isPromptNsfw !== false;
 
-  // Disable nsfw if the prompt contains poi/minor words
-  const hasPoi = includesPoi(params.prompt) || resourceData.some((x) => x.model.poi);
-  if (hasPoi || includesMinor(params.prompt)) nsfw = false;
+  const hasMinorResource = resourceData.some((resource) => resource.model.minor);
+  if (hasMinorResource) {
+    nsfw = false;
+  }
+
+  // Disable nsfw if the prompt contains minor words
+  // POI is handled via SPMs within the worker
+  if (includesMinor(params.prompt)) nsfw = false;
 
   const negativePrompts = [negativePrompt ?? ''];
   if (!nsfw && status.sfwEmbed) {
@@ -784,15 +776,16 @@ export const createGenerationRequest = async ({
   // console.log(JSON.stringify(generationRequest));
   // console.log('________');
 
-  const charge = status.charge;
-  const response = await fetch(
-    `${env.SCHEDULER_ENDPOINT}/requests${charge ? '?charge=true' : ''}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(generationRequest),
-    }
-  );
+  const schedulerUrl = new URL(`${env.SCHEDULER_ENDPOINT}/requests`);
+  if (status.charge) schedulerUrl.searchParams.set('charge', 'true');
+  if (params.staging) schedulerUrl.searchParams.set('staging', 'true');
+  // if (draft) schedulerUrl.searchParams.set('batch', 'true'); // Disable batching for now
+
+  const response = await fetch(schedulerUrl.toString(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(generationRequest),
+  });
 
   // console.log('________');
   // console.log(response);
@@ -886,6 +879,8 @@ export const getGenerationData = async (
       return await getResourceGenerationData({ modelId: props.id });
     case 'modelVersion':
       return await getResourceGenerationData({ modelVersionId: props.id });
+    case 'modelVersions':
+      return await getMultipleResourceGenerationData({ versionIds: props.ids });
     case 'random':
       return await getRandomGenerationData(props.includeResources);
   }
@@ -928,6 +923,32 @@ export const getResourceGenerationData = async ({
   };
 };
 
+const getMultipleResourceGenerationData = async ({ versionIds }: { versionIds: number[] }) => {
+  if (!versionIds.length) throw new Error('missing version ids');
+  const resources = await dbRead.modelVersion.findMany({
+    where: { id: { in: versionIds } },
+    select: {
+      ...generationResourceSelect,
+      clipSkip: true,
+      vaeId: true,
+    },
+  });
+  const checkpoint = resources.find((x) => x.baseModel === 'Checkpoint');
+  if (checkpoint?.vaeId) {
+    const vae = await dbRead.modelVersion.findFirst({
+      where: { id: checkpoint.vaeId },
+      select: { ...generationResourceSelect, clipSkip: true },
+    });
+    if (vae) resources.push({ ...vae, vaeId: null });
+  }
+  return {
+    resources: resources.map(mapGenerationResource),
+    params: {},
+  };
+};
+
+type ResourceUsedRow = Generation.Resource & { covered: boolean; hash?: string; strength?: number };
+const defaultCheckpointData: Partial<Record<BaseModelSetType, ResourceUsedRow>> = {};
 const getImageGenerationData = async (id: number): Promise<Generation.Data> => {
   const image = await dbRead.image.findUnique({
     where: { id },
@@ -945,9 +966,7 @@ const getImageGenerationData = async (id: number): Promise<Generation.Data> => {
     ...meta
   } = imageGenerationSchema.parse(image.meta);
 
-  const resources = await dbRead.$queryRaw<
-    Array<Generation.Resource & { covered: boolean; hash?: string; strength?: number }>
-  >`
+  const resources = await dbRead.$queryRaw<ResourceUsedRow[]>`
     SELECT
       mv.id,
       mv.name,
@@ -962,11 +981,30 @@ const getImageGenerationData = async (id: number): Promise<Generation.Data> => {
     FROM "ImageResource" ir
     JOIN "ModelVersion" mv on mv.id = ir."modelVersionId"
     JOIN "Model" m on m.id = mv."modelId"
-    JOIN "GenerationCoverage" gc on gc."modelVersionId" = mv.id
-    WHERE ir."imageId" = ${id}
+    LEFT JOIN "GenerationCoverage" gc on gc."modelVersionId" = mv.id
+    WHERE ir."imageId" = ${id};
   `;
 
-  const deduped = uniqBy(resources, 'id');
+  // if the checkpoint exists but isn't covered, add a default based off checkpoint `modelType`
+  const checkpoint = resources.find((x) => x.modelType === 'Checkpoint');
+  if (!checkpoint?.covered && checkpoint?.modelType) {
+    const baseModel = getBaseModelSetKey(checkpoint.baseModel);
+    const defaultCheckpoint = baseModel ? defaultCheckpoints[baseModel as any] : undefined;
+    if (baseModel && defaultCheckpoint) {
+      if (!defaultCheckpointData[baseModel]) {
+        const resource = await dbRead.modelVersion.findFirst({
+          where: { id: defaultCheckpoint.version },
+          select: generationResourceSelect,
+        });
+        if (resource) {
+          defaultCheckpointData[baseModel] = { ...mapGenerationResource(resource), covered: true };
+        }
+      }
+      if (defaultCheckpointData[baseModel])
+        resources.unshift(defaultCheckpointData[baseModel] as ResourceUsedRow);
+    }
+  }
+  const deduped = uniqBy(resources, 'id').filter((x) => x.covered);
   for (const resource of deduped) {
     if (resource.strength) resource.strength /= 100;
   }
@@ -1001,10 +1039,13 @@ const getImageGenerationData = async (id: number): Promise<Generation.Data> => {
   if (meta.seed == 0) meta.seed = undefined;
 
   return {
-    resources: deduped.map((resource) => ({
-      ...resource,
-      strength: resource.strength ?? 1,
-    })),
+    // only send back resources if we have a checkpoint resource
+    resources: !model
+      ? []
+      : deduped.map((resource) => ({
+          ...resource,
+          strength: resource.strength ?? 1,
+        })),
     params: {
       ...meta,
       clipSkip,
@@ -1041,21 +1082,8 @@ export const deleteAllGenerationRequests = async ({ userId }: { userId: number }
   if (!deleteResponse.ok) throw throwNotFoundError();
 };
 
-export async function prepareModelInOrchestrator({ id, baseModel }: PrepareModelInput) {
-  const orchestratorBaseModel = baseModel.includes('SDXL') ? 'SDXL' : 'SD_1_5';
-  const response = await orchestratorCaller.prepareModel({
-    payload: {
-      baseModel: orchestratorBaseModel,
-      model: `@civitai/${id}`,
-      priority: 1,
-      providers: ['OctoML', 'OctoMLNext'],
-    },
-  });
-
-  if (response.status === 429) throw throwRateLimitError();
-  if (!response.ok) throw new Error('An unknown error occurred. Please try again later');
-
-  return response.data;
+export async function prepareModelInOrchestrator({ id }: PrepareModelInput) {
+  await orchestratorCaller.bustModelCache({ modelVersionId: id });
 }
 
 export async function getUnstableResources() {
@@ -1165,12 +1193,14 @@ export const textToImage = async ({
 };
 
 export const textToImageTestRun = async ({
+  model,
   baseModel,
   quantity,
   sampler,
   steps,
   aspectRatio,
   draft,
+  resources,
 }: GenerationRequestTestRunSchema) => {
   const { aspectRatios } = getGenerationConfig(baseModel);
 
@@ -1191,18 +1221,21 @@ export const textToImageTestRun = async ({
     quantity = draftData.quantity;
     steps = draftData.steps;
     sampler = draftData.sampler;
+    if (!resources) resources = [];
+    resources.push(draftData.resourceId);
   }
 
+  const isSd1 = baseModel === 'SD1';
+  if (!model) model = isSd1 ? 128713 : 128078;
   const response = await orchestratorCaller.textToImage({
     payload: {
-      // Civitai SDXL - Irrelevant, not used for cost calculation.
-      model: '@civitai/128078',
+      model: `@civitai/${model}`,
       baseModel: baseModelToOrchestration[baseModel as BaseModelSetType],
       properties: {},
       quantity: quantity,
-      // TODO: in the future we may wanna add additional networks as they might be used for cost calculation.
-      // Not the case as of now.
-      additionalNetworks: {},
+      additionalNetworks: Object.fromEntries(
+        resources?.map((id) => [`@civitai/${id}`, { type: ModelType.LORA, strength: 1 }]) ?? []
+      ),
       params: {
         baseModel,
         scheduler: samplersToSchedulers[sampler as Sampler],
@@ -1227,5 +1260,26 @@ export const textToImageTestRun = async ({
     throw new Error('An unknown error occurred. Please try again later');
   }
 
-  return response.data;
+  const jobs = response.data?.jobs ?? [];
+  const cost = Math.ceil(jobs.reduce((acc, job) => acc + job.cost, 0));
+  let position = 0;
+  let ready = false;
+  let eta = dayjs().add(10, 'minutes').toDate();
+  for (const job of jobs) {
+    for (const [name, provider] of Object.entries(job.serviceProviders)) {
+      if (provider.support === 'Available' && !ready) ready = true;
+      if (!provider.queuePosition) continue;
+      if (provider.queuePosition.precedingJobs < position)
+        position = provider.queuePosition.precedingJobs;
+      if (provider.queuePosition.estimatedStartDate < eta)
+        eta = provider.queuePosition.estimatedStartDate;
+    }
+  }
+
+  return {
+    cost,
+    ready,
+    eta,
+    position,
+  };
 };

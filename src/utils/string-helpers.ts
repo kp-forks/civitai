@@ -1,9 +1,10 @@
+import { ModelType } from '@prisma/client';
 import { truncate } from 'lodash-es';
 import slugify from 'slugify';
+import { BaseModel, baseModelSets } from '~/server/common/constants';
 
 import allowedUrls from '~/utils/allowed-third-party-urls.json';
 import { toJson } from '~/utils/json-helpers';
-import he from 'he';
 
 function getUrlDomain(url: string) {
   // convert url string into a URL object and extract just the domain, avoiding subdomains
@@ -56,6 +57,8 @@ const nameOverrides: Record<string, string> = {
 
 export function getDisplayName(value: string, options?: { splitNumbers?: boolean }) {
   const { splitNumbers = true } = options ?? {};
+  if (!value) return '';
+
   return nameOverrides[value] ?? splitUppercase(value, { splitNumbers });
 }
 
@@ -70,6 +73,7 @@ export function getInitials(value: string) {
 
 const tokenCharacters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 const tokenCharactersLength = tokenCharacters.length;
+
 export function generateToken(length: number) {
   let result = '';
   for (let i = 0; i < length; i++)
@@ -129,7 +133,9 @@ export function removeTags(str: string) {
   return stringWithoutExtraSpaces.trim();
 }
 
-export function postgresSlugify(str: string) {
+export function postgresSlugify(str?: string) {
+  if (!str) return '';
+
   return str
     .replace(' ', '_')
     .replace(/[^a-zA-Z0-9_]/g, '')
@@ -169,10 +175,76 @@ export function trimNonAlphanumeric(str: string | null | undefined) {
   return str?.replace(/^[^\w]+|[^\w]+$/g, '');
 }
 
-export function normalizeText(input?: string): string {
-  if (!input) return '';
-  return he
-    .decode(input)
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
+const regex =
+  /^(?:urn:)?(?:air:)?(?:(?<ecosystem>[a-zA-Z0-9_\-\/]+):)?(?:(?<type>[a-zA-Z0-9_\-\/]+):)?(?<source>[a-zA-Z0-9_\-\/]+):(?<id>[a-zA-Z0-9_\-\/]+)(?:@(?<version>[a-zA-Z0-9_\-]+))?(?:\.(?<format>[a-zA-Z0-9_\-]+))?$/i;
+
+export function parseAIR(identifier: string) {
+  const match = regex.exec(identifier);
+  if (!match) {
+    throw new Error(`Invalid identifier: ${identifier}`);
+  }
+
+  const { ecosystem, type, source, id, version, format } = match.groups!;
+  return {
+    ecosystem,
+    type,
+    source,
+    model: Number(id),
+    version: Number(version),
+    format,
+  };
+}
+
+const typeUrnMap: Partial<Record<ModelType, string>> = {
+  [ModelType.AestheticGradient]: 'ag',
+  [ModelType.Checkpoint]: 'checkpoint',
+  [ModelType.Hypernetwork]: 'hypernet',
+  [ModelType.TextualInversion]: 'embedding',
+  [ModelType.MotionModule]: 'motion',
+  [ModelType.Upscaler]: 'upscaler',
+  [ModelType.VAE]: 'vae',
+  [ModelType.LORA]: 'lora',
+  [ModelType.DoRA]: 'dora',
+  [ModelType.LoCon]: 'lycoris',
+  [ModelType.Controlnet]: 'controlnet',
+};
+
+export function stringifyAIR({
+  baseModel,
+  type,
+  modelId,
+  id,
+  source = 'civitai',
+}: {
+  baseModel: BaseModel | string;
+  type: ModelType;
+  modelId: number;
+  id?: number;
+  source?: string;
+}) {
+  const ecosystem = (
+    Object.entries(baseModelSets).find(([, value]) =>
+      value.includes(baseModel as BaseModel)
+    )?.[0] ?? 'multi'
+  ).toLowerCase();
+  const urnType = typeUrnMap[type] ?? 'unknown';
+  if (!urnType) return null;
+
+  return `urn:air:${ecosystem}:${urnType}:${source}:${modelId}${id ? `@${id}` : ''}`;
+}
+
+export function toBase64(str: string) {
+  return Buffer.from(str).toString('base64');
+}
+
+export function safeDecodeURIComponent(str: string) {
+  try {
+    return decodeURIComponent(str);
+  } catch {
+    return str;
+  }
+}
+
+export function getRandomId() {
+  return Math.random().toString(36).substring(2, 11);
 }

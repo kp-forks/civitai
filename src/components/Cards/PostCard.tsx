@@ -14,17 +14,24 @@ import { truncate } from 'lodash-es';
 import { constants } from '~/server/common/constants';
 import { ImageGuard2 } from '~/components/ImageGuard/ImageGuard2';
 import { ImageContextMenu } from '~/components/Image/ContextMenu/ImageContextMenu';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
+import { AddArtFrameMenuItem } from '~/components/Decorations/AddArtFrameMenuItem';
+import { CosmeticEntity } from '@prisma/client';
+import { VideoMetadata } from '~/server/schema/media.schema';
+import { shouldAnimateByDefault } from '~/components/EdgeMedia/EdgeMedia.util';
 
 const IMAGE_CARD_WIDTH = 332;
 
 export function PostCard({ data }: Props) {
+  const currentUser = useCurrentUser();
   const { classes, cx } = useCardStyles({ aspectRatio: 1 });
   const router = useRouter();
 
   const image = data.images[0];
+  const isOwner = currentUser?.id === data.user.id;
 
   return (
-    <FeedCard href={`/posts/${data.id}`} aspectRatio="square">
+    <FeedCard href={`/posts/${data.id}`} aspectRatio="square" frameDecoration={data.cosmetic}>
       <div className={classes.root}>
         <ImageGuard2 image={image} connectType="post" connectId={data.id}>
           {(safe) => (
@@ -37,33 +44,50 @@ export function PostCard({ data }: Props) {
                 style={{ pointerEvents: 'none' }}
               >
                 <ImageGuard2.BlurToggle sx={{ pointerEvents: 'auto' }} />
-                <ImageContextMenu image={image} context="post" style={{ pointerEvents: 'auto' }} />
+                <ImageContextMenu
+                  image={image}
+                  context="post"
+                  style={{ pointerEvents: 'auto' }}
+                  additionalMenuItems={
+                    isOwner ? (
+                      <AddArtFrameMenuItem
+                        entityType={CosmeticEntity.Post}
+                        entityId={data.id}
+                        image={image}
+                        currentCosmetic={data.cosmetic}
+                      />
+                    ) : null
+                  }
+                />
               </Group>
               {!safe ? (
                 <MediaHash {...image} />
               ) : (
-                <EdgeMedia
-                  src={image.url}
-                  name={image.name ?? image.id.toString()}
-                  alt={
-                    image.meta
-                      ? truncate(image.meta.prompt, { length: constants.altTruncateLength })
-                      : image.name ?? undefined
-                  }
-                  type={image.type}
-                  width={IMAGE_CARD_WIDTH}
-                  placeholder="empty"
-                  className={classes.image}
-                />
+                <div
+                  className={data.cosmetic ? classes.frameAdjustment : undefined}
+                  style={{ height: '100%' }}
+                >
+                  <EdgeMedia
+                    src={image.url}
+                    name={image.name ?? image.id.toString()}
+                    alt={
+                      image.meta
+                        ? truncate(image.meta.prompt, { length: constants.altTruncateLength })
+                        : image.name ?? undefined
+                    }
+                    anim={shouldAnimateByDefault(image)}
+                    type={image.type}
+                    width={IMAGE_CARD_WIDTH}
+                    placeholder="empty"
+                    className={classes.image}
+                  />
+                </div>
               )}
             </>
           )}
         </ImageGuard2>
 
-        <Stack
-          className={cx(classes.contentOverlay, classes.bottom, classes.gradientOverlay)}
-          spacing="sm"
-        >
+        <Stack className={cx(classes.contentOverlay, classes.bottom)} spacing="sm">
           <Group position="apart" align="end" noWrap>
             <Stack spacing="sm">
               {data.user?.id !== -1 && (
@@ -78,13 +102,13 @@ export function PostCard({ data }: Props) {
                 >
                   <UserAvatar
                     user={data.user}
-                    avatarProps={{ radius: 'md', size: 32 }}
+                    avatarProps={{ radius: 'xl', size: 32 }}
                     withUsername
                   />
                 </UnstyledButton>
               )}
               {data.title && (
-                <Text size="xl" weight={700} lineClamp={2} lh={1.2}>
+                <Text className={classes.dropShadow} size="xl" weight={700} lineClamp={2} lh={1.2}>
                   {data.title}
                 </Text>
               )}

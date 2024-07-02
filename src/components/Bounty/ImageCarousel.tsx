@@ -75,10 +75,10 @@ const useStyles = createStyles((theme) => ({
     bottom: 6,
     left: 6,
     borderRadius: theme.radius.sm,
-    background: theme.fn.rgba(
-      theme.colorScheme === 'dark' ? theme.colors.dark[9] : theme.colors.gray[0],
-      0.8
-    ),
+    background:
+      theme.colorScheme === 'dark'
+        ? theme.fn.rgba(theme.colors.dark[6], 0.6)
+        : theme.colors.gray[0],
     // backdropFilter: 'blur(13px) saturate(160%)',
     boxShadow: '0 -2px 6px 1px rgba(0,0,0,0.16)',
     padding: 4,
@@ -122,7 +122,7 @@ export function ImageCarouselContent({
     () =>
       images.map((image) => ({
         ...image,
-        tagIds: image.tags?.map((x) => x.id),
+        tagIds: image.tags?.map((x) => (typeof x === 'number' ? x : x.id)),
       })),
     [images]
   );
@@ -184,64 +184,66 @@ export function ImageCarouselContent({
         }}
       >
         {filteredImages.map((image) => (
-          <ImageGuard2 key={image.id} image={image} connectType={connectType} connectId={connectId}>
-            {(safe) => (
-              <Carousel.Slide>
-                <Box
-                  sx={{ cursor: 'pointer' }}
-                  onClick={onClick ? () => onClick(image) : undefined}
-                  tabIndex={0}
-                  role="button"
-                  onKeyDown={
-                    onClick
-                      ? (e) => {
-                          const keyDown = e.key !== undefined ? e.key : e.keyCode;
-                          if (
-                            keyDown === 'Enter' ||
-                            keyDown === 13 ||
-                            ['Spacebar', ' '].indexOf(keyDown as string) >= 0 ||
-                            keyDown === 32
-                          ) {
-                            // (prevent default so the page doesn't scroll when pressing space)
-                            e.preventDefault();
-                            onClick(image);
-                          }
-                        }
-                      : undefined
-                  }
-                >
-                  <Center className="h-full w-full">
-                    <div className="relative w-full">
-                      <ImageGuard2.BlurToggle className="absolute top-2 left-2 z-10" />
-                      <ImageContextMenu image={image} className="absolute top-2 right-2 z-10" />
-                      <ImagePreview
-                        image={image}
-                        edgeImageProps={{
-                          width: 450,
-                          style: { objectPosition: mobile ? 'top' : 'center' },
-                        }}
-                        radius="md"
-                        style={{ width: '100%' }}
-                        aspectRatio={1}
-                        nsfw={!safe}
-                      />
-                      {image.meta && (
-                        <ImageMetaPopover
-                          meta={image.meta}
-                          generationProcess={image.generationProcess ?? undefined}
-                          imageId={image.id}
-                        >
-                          <ActionIcon variant="light" className={classes.meta}>
-                            <IconInfoCircle color="white" strokeWidth={2.5} size={18} />
-                          </ActionIcon>
-                        </ImageMetaPopover>
-                      )}
-                    </div>
-                  </Center>
-                </Box>
-              </Carousel.Slide>
-            )}
-          </ImageGuard2>
+          <Carousel.Slide key={image.id}>
+            <Box
+              sx={{ cursor: 'pointer' }}
+              onClick={onClick ? () => onClick(image) : undefined}
+              tabIndex={0}
+              role="button"
+              onKeyDown={
+                onClick
+                  ? (e) => {
+                      const keyDown = e.key !== undefined ? e.key : e.keyCode;
+                      if (
+                        keyDown === 'Enter' ||
+                        keyDown === 13 ||
+                        ['Spacebar', ' '].indexOf(keyDown as string) >= 0 ||
+                        keyDown === 32
+                      ) {
+                        // (prevent default so the page doesn't scroll when pressing space)
+                        e.preventDefault();
+                        onClick(image);
+                      }
+                    }
+                  : undefined
+              }
+            >
+              <Center className="size-full">
+                <div className="relative w-full">
+                  <ImageGuard2 image={image} connectType={connectType} connectId={connectId}>
+                    {(safe) => (
+                      <>
+                        <ImageGuard2.BlurToggle className="absolute left-2 top-2 z-10" />
+                        <ImageContextMenu image={image} className="absolute right-2 top-2 z-10" />
+                        <ImagePreview
+                          image={image}
+                          edgeImageProps={{
+                            width: 450,
+                            style: { objectPosition: mobile ? 'top' : 'center' },
+                          }}
+                          radius="md"
+                          style={{ width: '100%' }}
+                          aspectRatio={1}
+                          nsfw={!safe}
+                        />
+                        {image.meta && (
+                          <ImageMetaPopover
+                            meta={image.meta}
+                            generationProcess={image.generationProcess ?? undefined}
+                            imageId={image.id}
+                          >
+                            <ActionIcon variant="light" className={classes.meta}>
+                              <IconInfoCircle color="white" strokeWidth={2.5} size={18} />
+                            </ActionIcon>
+                          </ImageMetaPopover>
+                        )}
+                      </>
+                    )}
+                  </ImageGuard2>
+                </div>
+              </Center>
+            </Box>
+          </Carousel.Slide>
         ))}
         {hiddenExplained.hasHidden && (
           <Carousel.Slide>

@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  AspectRatio,
   Badge,
   Box,
   Container,
@@ -10,6 +11,7 @@ import {
   Stack,
   Text,
   Title,
+  Center,
 } from '@mantine/core';
 import { ArticleEngagementType, Availability } from '@prisma/client';
 import { IconBolt, IconBookmark, IconShare3 } from '@tabler/icons-react';
@@ -18,7 +20,6 @@ import { InferGetServerSidePropsType } from 'next';
 import Link from 'next/link';
 import React from 'react';
 import { z } from 'zod';
-import { getEdgeUrl } from '~/client-utils/cf-images-utils';
 import { NotFound } from '~/components/AppLayout/NotFound';
 import { ArticleContextMenu } from '~/components/Article/ArticleContextMenu';
 import { ArticleDetailComments } from '~/components/Article/Detail/ArticleDetailComments';
@@ -55,7 +56,11 @@ import { MediaHash } from '~/components/ImageHash/ImageHash';
 import { ImageGuard2 } from '~/components/ImageGuard/ImageGuard2';
 import { ImageContextMenu } from '~/components/Image/ContextMenu/ImageContextMenu';
 import { hasPublicBrowsingLevel } from '../../../shared/constants/browsingLevel.constants';
-import { RoutedDialogLink } from '~/components/Dialog/RoutedDialogProvider';
+import { setPageOptions } from '~/components/AppLayout/AppLayout';
+import { ImageViewer, useImageViewerCtx } from '~/components/ImageViewer/ImageViewer';
+import { ScrollAreaMain } from '~/components/ScrollArea/ScrollAreaMain';
+import { getHotkeyHandler } from '@mantine/hooks';
+import { constants } from '~/server/common/constants';
 
 const querySchema = z.object({
   id: z.preprocess(parseNumericString, z.number()),
@@ -77,12 +82,15 @@ export const getServerSideProps = createServerSideProps({
   },
 });
 
+const MAX_WIDTH = 1320;
+
 export default function ArticleDetailsPage({
   id,
 }: InferGetServerSidePropsType<typeof getServerSideProps>) {
   const currentUser = useCurrentUser();
   const { classes, theme } = useStyles();
   const mobile = useContainerSmallerThan('sm');
+  const { setImages, onSetImage, images } = useImageViewerCtx();
 
   const { data: article, isLoading } = trpc.article.getById.useQuery({ id });
   const tippedAmount = useBuzzTippingStore({ entityType: 'Article', entityId: id });
@@ -152,7 +160,7 @@ export default function ArticleDetailsPage({
                 onClick={() => toggle(ArticleEngagementType.Favorite)}
               >
                 <Text className={classes.badgeText}>
-                  {abbreviateNumber(article.stats?.favoriteCountAllTime ?? 0)}
+                  {abbreviateNumber(article.stats?.collectedCountAllTime ?? 0)}
                 </Text>
               </IconBadge>
             );
@@ -167,8 +175,14 @@ export default function ArticleDetailsPage({
     </Group>
   );
 
+  const handleOpenCoverImage =
+    (imageId: number) => (e: React.KeyboardEvent<HTMLElement> | KeyboardEvent) => {
+      e.preventDefault();
+      onSetImage(imageId);
+    };
+
   const image = article.coverImage;
-  const maxWidth = 1320;
+  if (image && !images.length) setImages([image]);
 
   return (
     <>
@@ -230,50 +244,56 @@ export default function ArticleDetailsPage({
             )}
           </Group>
         </Stack>
-        <Grid>
+        <Grid gutter="xl">
           <Grid.Col xs={12} md={8}>
             <Stack spacing="xs">
-              <Box
-                sx={(theme) => ({
-                  position: 'relative',
-                  height: 'calc(100vh / 3)',
-                  'img, .hashWrapper': {
-                    height: '100%',
-                    objectFit: 'cover',
-                    borderRadius: theme.radius.md,
-                  },
-                })}
+              <AspectRatio
+                ratio={constants.article.coverImageWidth / constants.article.coverImageHeight}
               >
                 {image && (
-                  <ImageGuard2 image={image} connectType="article" connectId={article.id}>
-                    {(safe) => (
-                      <RoutedDialogLink name="imageDetail" state={{ imageId: image.id }}>
-                        <ImageGuard2.BlurToggle className="absolute top-2 left-2 z-10" />
-                        <ImageContextMenu image={image} className="absolute top-2 right-2 z-10" />
-                        {!safe ? (
-                          <div
-                            className="hashWrapper"
-                            style={{
-                              position: 'relative',
-                            }}
-                          >
-                            <MediaHash {...image} />
-                          </div>
-                        ) : (
-                          <EdgeMedia
-                            src={image.url}
-                            name={image.name}
-                            alt={article.title}
-                            type={image.type}
-                            width={maxWidth}
-                            anim={safe}
-                          />
-                        )}
-                      </RoutedDialogLink>
-                    )}
-                  </ImageGuard2>
+                  <Box
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onSetImage(image.id)}
+                    onKeyDown={getHotkeyHandler([
+                      ['Enter', handleOpenCoverImage(image.id)],
+                      ['Space', handleOpenCoverImage(image.id)],
+                    ])}
+                    sx={{ cursor: 'pointer' }}
+                  >
+                    <Center className="size-full">
+                      <div className="relative size-full">
+                        <ImageGuard2 image={image} connectType="article" connectId={article.id}>
+                          {(safe) => (
+                            <>
+                              <ImageGuard2.BlurToggle className="absolute left-2 top-2 z-10" />
+                              <ImageContextMenu
+                                image={image}
+                                className="absolute right-2 top-2 z-10"
+                              />
+                              {!safe ? (
+                                <div className="relative h-full overflow-hidden rounded-lg object-cover">
+                                  <MediaHash {...image} />
+                                </div>
+                              ) : (
+                                <EdgeMedia
+                                  src={image.url}
+                                  className="h-full rounded-lg object-cover"
+                                  name={image.name}
+                                  alt={article.title}
+                                  type={image.type}
+                                  width={MAX_WIDTH}
+                                  anim={safe}
+                                />
+                              )}
+                            </>
+                          )}
+                        </ImageGuard2>
+                      </div>
+                    </Center>
+                  </Box>
                 )}
-              </Box>
+              </AspectRatio>
               {article.content && (
                 <article>
                   <RenderHtml html={article.content} />
@@ -306,11 +326,21 @@ export default function ArticleDetailsPage({
             />
           </Grid.Col>
         </Grid>
-        {article.user && <ArticleDetailComments articleId={article.id} userId={article.user.id} />}
+        <ArticleDetailComments articleId={article.id} userId={article.user.id} />
       </Container>
     </>
   );
 }
+
+setPageOptions(ArticleDetailsPage, {
+  innerLayout({ children }) {
+    return (
+      <ImageViewer>
+        <ScrollAreaMain>{children}</ScrollAreaMain>
+      </ImageViewer>
+    );
+  },
+});
 
 const useStyles = createStyles((theme) => ({
   titleWrapper: {

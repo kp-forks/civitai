@@ -351,7 +351,11 @@ export const upsertBountyHandler = async ({
   ctx: DeepNonNullable<Context>;
 }) => {
   try {
-    const bounty = await upsertBounty({ ...input, userId: ctx.user.id });
+    const bounty = await upsertBounty({
+      ...input,
+      userId: ctx.user.id,
+      isModerator: ctx.user.isModerator ?? false,
+    });
     if (!bounty) throw throwNotFoundError(`No bounty with id ${input.id}`);
 
     if (input.id) ctx.track.bounty({ type: 'Update', bountyId: input.id }).catch(handleLogError);

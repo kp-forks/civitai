@@ -1,13 +1,13 @@
-import { NextApiRequest, NextApiResponse } from 'next';
-import { dbRead } from '~/server/db/client';
-import { env } from '~/env/server.mjs';
 import { Partner } from '@prisma/client';
-import { getServerAuthSession } from '~/server/utils/get-server-auth-session';
-import { generateSecretHash } from '~/server/utils/key-generator';
-import { Session, SessionUser } from 'next-auth';
-import { AxiomAPIRequest, withAxiom } from 'next-axiom';
 import { TRPCError } from '@trpc/server';
 import { getHTTPStatusCodeFromError } from '@trpc/server/http';
+import { NextApiRequest, NextApiResponse } from 'next';
+import { Session, SessionUser } from 'next-auth';
+import { AxiomAPIRequest, withAxiom } from 'next-axiom';
+import { env } from '~/env/server.mjs';
+import { dbRead } from '~/server/db/client';
+import { getServerAuthSession } from '~/server/utils/get-server-auth-session';
+import { generateSecretHash } from '~/server/utils/key-generator';
 
 export function TokenSecuredEndpoint(
   token: string,
@@ -60,7 +60,7 @@ const addPublicCacheHeaders = (req: NextApiRequest, res: NextApiResponse) => {
 };
 
 export function PublicEndpoint(
-  handler: (req: AxiomAPIRequest, res: NextApiResponse) => Promise<void>,
+  handler: (req: AxiomAPIRequest, res: NextApiResponse) => Promise<void | NextApiResponse>,
   allowedMethods: string[] = ['GET']
 ) {
   return withAxiom(async (req: AxiomAPIRequest, res: NextApiResponse) => {
@@ -72,7 +72,11 @@ export function PublicEndpoint(
 }
 
 export function AuthedEndpoint(
-  handler: (req: AxiomAPIRequest, res: NextApiResponse, user: SessionUser) => Promise<void>,
+  handler: (
+    req: AxiomAPIRequest,
+    res: NextApiResponse,
+    user: SessionUser
+  ) => Promise<void | NextApiResponse>,
   allowedMethods: string[] = ['GET']
 ) {
   return withAxiom(async (req: AxiomAPIRequest, res: NextApiResponse) => {

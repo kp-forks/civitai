@@ -18,13 +18,16 @@ import {
 } from '@prisma/client';
 import { IconExclamationMark } from '@tabler/icons-react';
 import { useRouter } from 'next/router';
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { z } from 'zod';
-
+import { ContainerGrid } from '~/components/ContainerGrid/ContainerGrid';
+import { InfoPopover } from '~/components/InfoPopover/InfoPopover';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
 import {
   Form,
   InputCheckbox,
   InputCheckboxGroup,
+  InputMultiSelect,
   InputRTE,
   InputSegmentedControl,
   InputSelect,
@@ -34,21 +37,20 @@ import {
 } from '~/libs/form';
 import { TagSort } from '~/server/common/enums';
 import { ModelUpsertInput, modelUpsertSchema } from '~/server/schema/model.schema';
+import { getSanitizedStringSchema } from '~/server/schema/utils.schema';
+import { ModelById } from '~/types/router';
 import { showErrorNotification } from '~/utils/notifications';
 import { parseNumericString } from '~/utils/query-string-helpers';
 import { getDisplayName, splitUppercase, titleCase } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
-import { ContainerGrid } from '~/components/ContainerGrid/ContainerGrid';
-import { InfoPopover } from '~/components/InfoPopover/InfoPopover';
-import { getSanitizedStringSchema } from '~/server/schema/utils.schema';
-
-import { ModelById } from '~/types/router';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
+import { isDefined } from '~/utils/type-guards';
 
 const schema = modelUpsertSchema
   .extend({
-    category: z.number().optional(),
-    description: getSanitizedStringSchema(),
+    category: z.number().gt(0, 'Required'),
+    description: getSanitizedStringSchema().refine((data) => {
+      return data && data.length > 0 && data !== '<p></p>';
+    }, 'Cannot be empty'),
   })
   .refine((data) => (data.type === 'Checkpoint' ? !!data.checkpointType : true), {
     message: 'Please select the checkpoint type',
@@ -56,6 +58,9 @@ const schema = modelUpsertSchema
   })
   .refine((data) => !(data.nsfw && data.poi), {
     message: 'Mature content depicting actual people is not permitted.',
+  })
+  .refine((data) => !(data.nsfw && data.minor), {
+    message: 'Mature content depicting minors is not permitted.',
   });
 const querySchema = z.object({
   category: z.preprocess(parseNumericString, z.number().optional()),
@@ -70,15 +75,14 @@ const commercialUseOptions: Array<{ value: CommercialUse; label: string }> = [
   { value: CommercialUse.Sell, label: 'Sell this model or merges' },
 ];
 
+const lockableProperties = ['nsfw', 'poi', 'minor', 'category', 'tags'];
+
 export function ModelUpsertForm({ model, children, onSubmit }: Props) {
   const router = useRouter();
   const result = querySchema.safeParse(router.query);
   const currentUser = useCurrentUser();
 
-  const lockedPropertiesRef = useRef<string[]>(model?.lockedProperties ?? []);
-  const canEditNsfw = !currentUser?.isModerator ? !model?.lockedProperties?.includes('nsfw') : true;
-
-  const defaultCategory = result.success ? result.data.category : undefined;
+  const defaultCategory = result.success ? result.data.category ?? 0 : 0;
   const defaultValues: z.infer<typeof schema> = {
     ...model,
     name: model?.name ?? '',
@@ -106,8 +110,10 @@ export function ModelUpsertForm({ model, children, onSubmit }: Props) {
   const queryUtils = trpc.useUtils();
 
   const [type, allowDerivatives] = form.watch(['type', 'allowDerivatives']);
-  const [nsfw, poi] = form.watch(['nsfw', 'poi']);
+  const [nsfw, poi, minor] = form.watch(['nsfw', 'poi', 'minor']);
+  const allowCommercialUse = form.watch('allowCommercialUse');
   const hasPoiInNsfw = nsfw && poi;
+  const hasMinorInNsfw = nsfw && minor;
   const { isDirty, errors } = form.formState;
 
   const { data, isLoading: loadingCategories } = trpc.tag.getAll.useQuery({
@@ -151,22 +157,29 @@ export function ModelUpsertForm({ model, children, onSubmit }: Props) {
         tagsOnModels && selectedCategory ? tagsOnModels.concat([selectedCategory]) : tagsOnModels;
       upsertModelMutation.mutate({
         ...rest,
-        nsfw: canEditNsfw ? rest?.nsfw : undefined,
         tagsOnModels: tags,
         templateId,
         bountyId,
-        lockedProperties: lockedPropertiesRef.current,
       });
     } else onSubmit(defaultValues);
   };
 
   useEffect(() => {
-    if (currentUser?.isModerator) {
-      if (nsfw)
-        lockedPropertiesRef.current = [...new Set([...lockedPropertiesRef.current, 'nsfw'])];
-      else lockedPropertiesRef.current = lockedPropertiesRef.current.filter((x) => x !== 'nsfw');
-    }
-  }, [nsfw]);
+    const subscription = form.watch((value, { name, type }) => {
+      if (
+        currentUser?.isModerator &&
+        name &&
+        lockableProperties.includes(name) &&
+        !value.lockedProperties?.includes(name)
+      ) {
+        const locked = (value.lockedProperties ?? []).filter(isDefined);
+        form.setValue('lockedProperties', [...locked, name]);
+      }
+    });
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []); // eslint-disable-line
 
   useEffect(() => {
     if (model)
@@ -178,6 +191,14 @@ export function ModelUpsertForm({ model, children, onSubmit }: Props) {
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defaultCategory, model]);
+
+  function isLocked(key: string) {
+    return !currentUser?.isModerator ? model?.lockedProperties?.includes(key) : false;
+  }
+
+  function isLockedDescription(key: string, defaultDescription?: string) {
+    return model?.lockedProperties?.includes(key) ? 'Locked by moderator' : defaultDescription;
+  }
 
   return (
     <Form form={form} onSubmit={handleSubmit}>
@@ -210,13 +231,12 @@ export function ModelUpsertForm({ model, children, onSubmit }: Props) {
                       color="blue"
                       styles={(theme) => ({
                         root: {
-                          border: `1px solid ${
-                            errors.checkpointType
-                              ? theme.colors.red[theme.fn.primaryShade()]
-                              : theme.colorScheme === 'dark'
+                          border: `1px solid ${errors.checkpointType
+                            ? theme.colors.red[theme.fn.primaryShade()]
+                            : theme.colorScheme === 'dark'
                               ? theme.colors.dark[4]
                               : theme.colors.gray[4]
-                          }`,
+                            }`,
                           background: 'none',
                           height: 36,
                         },
@@ -233,18 +253,13 @@ export function ModelUpsertForm({ model, children, onSubmit }: Props) {
             </Stack>
             <InputSelect
               name="category"
-              label={
-                <Group spacing={4} noWrap>
-                  <Input.Label>Category</Input.Label>
-                  <InfoPopover type="hover" size="xs" iconProps={{ size: 14 }}>
-                    <Text>
-                      Categories determine what kind of resource you&apos;re making. Selecting a
-                      category that&apos;s the closest match to your subject helps users find your
-                      resource
-                    </Text>
-                  </InfoPopover>
-                </Group>
-              }
+              label="Category"
+              disabled={isLocked('category')}
+              description={isLockedDescription(
+                'category',
+                `Selecting the closest match helps users find your resource.`
+              )}
+              withAsterisk
               placeholder="Select a Category"
               nothingFound="Nothing found"
               data={categories}
@@ -337,11 +352,45 @@ export function ModelUpsertForm({ model, children, onSubmit }: Props) {
                         Select all permissions you would like to apply to your model.
                       </Text>
                     </Stack>
-                    <InputCheckboxGroup spacing="xs" name="allowCommercialUse">
+                    <Checkbox.Group
+                      spacing="xs"
+                      value={allowCommercialUse}
+                      defaultValue={defaultValues.allowCommercialUse}
+                      onChange={(v: CommercialUse[]) => {
+                        if (v.includes(CommercialUse.Sell)) {
+                          const deduped = new Set([
+                            ...v,
+                            CommercialUse.RentCivit,
+                            CommercialUse.Rent,
+                          ]);
+                          form.setValue('allowCommercialUse', Array.from(deduped), {
+                            shouldDirty: true,
+                          });
+                        } else if (v.includes(CommercialUse.Rent)) {
+                          const deduped = new Set([...v, CommercialUse.RentCivit]);
+                          form.setValue('allowCommercialUse', Array.from(deduped), {
+                            shouldDirty: true,
+                          });
+                        } else {
+                          form.setValue('allowCommercialUse', v, { shouldDirty: true });
+                        }
+                      }}
+                    >
                       {commercialUseOptions.map(({ value, label }) => (
-                        <Checkbox key={value} value={value} label={label} />
+                        <Checkbox
+                          key={value}
+                          value={value}
+                          label={label}
+                          disabled={
+                            (value === CommercialUse.RentCivit &&
+                              (allowCommercialUse?.includes(CommercialUse.Sell) ||
+                                allowCommercialUse?.includes(CommercialUse.Rent))) ||
+                            (value === CommercialUse.Rent &&
+                              allowCommercialUse?.includes(CommercialUse.Sell))
+                          }
+                        />
                       ))}
-                    </InputCheckboxGroup>
+                    </Checkbox.Group>
                   </Stack>
                 </ContainerGrid.Col>
               </ContainerGrid>
@@ -354,15 +403,35 @@ export function ModelUpsertForm({ model, children, onSubmit }: Props) {
                 <InputCheckbox
                   name="poi"
                   label="Depicts an actual person"
-                  description="For Example: Tom Cruise or Tom Cruise as Maverick"
+                  description={isLockedDescription(
+                    'category',
+                    'For Example: Tom Cruise or Tom Cruise as Maverick'
+                  )}
+                  disabled={isLocked('poi')}
                 />
                 <InputCheckbox
                   name="nsfw"
                   label="Is intended to produce mature themes"
-                  disabled={!canEditNsfw}
+                  disabled={isLocked('nsfw')}
+                  description={isLockedDescription('category')}
+                />
+                <InputCheckbox
+                  name="minor"
+                  label="Cannot be used for NSFW generation"
+                  disabled={isLocked('minor')}
+                  description={isLockedDescription('minor')}
                 />
               </Stack>
             </Paper>
+            {currentUser?.isModerator && (
+              <Paper radius="md" p="xl" withBorder>
+                <InputMultiSelect
+                  name="lockedProperties"
+                  label="Locked properties"
+                  data={lockableProperties}
+                />
+              </Paper>
+            )}
             {hasPoiInNsfw && (
               <>
                 <Alert color="red" pl={10}>
@@ -378,6 +447,24 @@ export function ModelUpsertForm({ model, children, onSubmit }: Props) {
                 <Text size="xs" color="dimmed" sx={{ lineHeight: 1.2 }}>
                   Please revise the content of this listing to ensure no actual person is depicted
                   in an mature context out of respect for the individual.
+                </Text>
+              </>
+            )}
+            {hasMinorInNsfw && (
+              <>
+                <Alert color="red" pl={10}>
+                  <Group noWrap spacing={10}>
+                    <ThemeIcon color="red">
+                      <IconExclamationMark />
+                    </ThemeIcon>
+                    <Text size="xs" sx={{ lineHeight: 1.2 }}>
+                      Mature content depicting minors is not permitted.
+                    </Text>
+                  </Group>
+                </Alert>
+                <Text size="xs" color="dimmed" sx={{ lineHeight: 1.2 }}>
+                  Please revise the content of this listing to ensure no minors are depicted in an
+                  mature context out of respect for the individual.
                 </Text>
               </>
             )}

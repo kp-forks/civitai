@@ -15,8 +15,10 @@ export function PageModal(props: ModalProps) {
 
   return (
     <Modal
-      {...props}
       target="main"
+      {...props}
+      zIndex={499}
+      transitionDuration={0}
       styles={{
         root: { position: 'absolute' },
         body: { height: '100%', width: '100%', display: 'flex', flexDirection: 'column' },

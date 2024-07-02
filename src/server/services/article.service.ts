@@ -31,7 +31,11 @@ import {
   getUserCollectionPermissionsById,
 } from '~/server/services/collection.service';
 import { getCategoryTags } from '~/server/services/system-cache';
-import { throwDbError, throwNotFoundError } from '~/server/utils/errorHandling';
+import {
+  throwAuthorizationError,
+  throwDbError,
+  throwNotFoundError,
+} from '~/server/utils/errorHandling';
 import { getPagination, getPagingData } from '~/server/utils/pagination-helpers';
 import { decreaseDate } from '~/utils/date-helpers';
 import { postgresSlugify, removeTags } from '~/utils/string-helpers';
@@ -40,6 +44,8 @@ import { getFilesByEntity } from './file.service';
 import { imageSelect, profileImageSelect } from '~/server/selectors/image.selector';
 import { createImage, deleteImageById } from '~/server/services/image.service';
 import { ImageMetaProps } from '~/server/schema/image.schema';
+import { ContentDecorationCosmetic, WithClaimKey } from '~/server/selectors/cosmetic.selector';
+import { getCosmeticsForEntity } from '~/server/services/cosmetic.service';
 
 type ArticleRaw = {
   id: number;
@@ -54,6 +60,7 @@ type ArticleRaw = {
   stats:
     | {
         favoriteCount: number;
+        collectedCount: number;
         commentCount: number;
         likeCount: number;
         dislikeCount: number;
@@ -88,6 +95,7 @@ type ArticleRaw = {
       source: CosmeticSource;
     };
   }[];
+  cosmetic?: WithClaimKey<ContentDecorationCosmetic> | null;
 };
 
 export type ArticleGetAllRecord = Awaited<ReturnType<typeof getArticles>>['items'][number];
@@ -116,11 +124,14 @@ export const getArticles = async ({
   clubId,
   pending,
   browsingLevel,
+  include,
 }: GetInfiniteArticlesSchema & {
   sessionUser?: { id: number; isModerator?: boolean; username?: string };
+  include?: Array<'cosmetics'>;
 }) => {
   const userId = sessionUser?.id;
   const isModerator = sessionUser?.isModerator ?? false;
+  const includeCosmetics = !!include?.includes('cosmetics');
   try {
     const take = limit + 1;
     const isMod = sessionUser?.isModerator ?? false;
@@ -283,15 +294,15 @@ export const getArticles = async ({
 
     let orderBy = `a."publishedAt" DESC NULLS LAST`;
     if (sort === ArticleSort.MostBookmarks)
-      orderBy = `rank."favoriteCount${period}Rank" ASC NULLS LAST, ${orderBy}`;
+      orderBy = `rank."collectedCount${period}Rank" ASC NULLS LAST, ${orderBy}`;
     else if (sort === ArticleSort.MostComments)
       orderBy = `rank."commentCount${period}Rank" ASC NULLS LAST, ${orderBy}`;
     else if (sort === ArticleSort.MostReactions)
       orderBy = `rank."reactionCount${period}Rank" ASC NULLS LAST, ${orderBy}`;
     else if (sort === ArticleSort.MostCollected)
       orderBy = `rank."collectedCount${period}Rank" ASC NULLS LAST, ${orderBy}`;
-    else if (sort === ArticleSort.MostTipped)
-      orderBy = `rank."tippedAmountCount${period}Rank" ASC NULLS LAST, ${orderBy}`;
+    // else if (sort === ArticleSort.MostTipped)
+    //   orderBy = `rank."tippedAmountCount${period}Rank" ASC NULLS LAST, ${orderBy}`;
 
     // eslint-disable-next-line prefer-const
     let [cursorProp, cursorDirection] = orderBy?.split(' ');
@@ -354,6 +365,7 @@ export const getArticles = async ({
         ${Prisma.raw(`
         jsonb_build_object(
           'favoriteCount', stats."favoriteCount${period}",
+          'collectedCount', stats."collectedCount${period}",
           'commentCount', stats."commentCount${period}",
           'likeCount', stats."likeCount${period}",
           'dislikeCount', stats."dislikeCount${period}",
@@ -403,7 +415,7 @@ export const getArticles = async ({
           FROM "UserCosmetic" uc
           JOIN "Cosmetic" c ON c.id = uc."cosmeticId"
               AND "equippedAt" IS NOT NULL
-          WHERE uc."userId" = a."userId"
+          WHERE uc."userId" = a."userId" AND uc."equippedToId" IS NULL
           GROUP BY uc."userId"
         ) as "userCosmetics",
         ${Prisma.raw(cursorProp ? cursorProp : 'null')} as "cursorId"
@@ -432,6 +444,9 @@ export const getArticles = async ({
       : [];
 
     const articleCategories = await getCategoryTags('article');
+    const cosmetics = includeCosmetics
+      ? await getCosmeticsForEntity({ ids: articles.map((x) => x.id), entity: 'Article' })
+      : {};
 
     const items = articles
       .filter((a) => {
@@ -471,10 +486,18 @@ export const getArticles = async ({
                 tags: coverImage?.tags.flatMap((x) => x.tag.id),
               }
             : undefined,
+          cosmetic: cosmetics[article.id] ?? null,
         };
       });
 
-    return { nextCursor, items };
+    return {
+      nextCursor,
+      items: items as Array<
+        Omit<(typeof items)[number], 'cosmetic'> & {
+          cosmetic?: WithClaimKey<ContentDecorationCosmetic> | null;
+        }
+      >,
+    };
   } catch (error) {
     throw throwDbError(error);
   }
@@ -612,8 +635,9 @@ export const upsertArticle = async ({
   tags,
   attachments,
   coverImage,
+  isModerator,
   ...data
-}: UpsertArticleInput & { userId: number }) => {
+}: UpsertArticleInput & { userId: number; isModerator?: boolean }) => {
   try {
     // create image entity to be attached to article
     let coverId = coverImage?.id;
@@ -665,9 +689,12 @@ export const upsertArticle = async ({
 
     const article = await dbWrite.article.findUnique({
       where: { id },
-      select: { id: true, cover: true, coverId: true },
+      select: { id: true, cover: true, coverId: true, userId: true },
     });
     if (!article) throw throwNotFoundError();
+
+    const isOwner = article.userId === userId || isModerator;
+    if (!isOwner) throw throwAuthorizationError('You cannot perform this action');
 
     const result = await dbWrite.$transaction(async (tx) => {
       const updated = await tx.article.update({
@@ -762,17 +789,28 @@ export const upsertArticle = async ({
   }
 };
 
-export const deleteArticleById = async ({ id }: GetByIdInput) => {
+export const deleteArticleById = async ({
+  id,
+  userId,
+  isModerator,
+}: GetByIdInput & { userId: number; isModerator?: boolean }) => {
   try {
+    const article = await dbWrite.article.findUnique({
+      where: { id },
+      select: { userId: true },
+    });
+    if (!article) throw throwNotFoundError(`No article with id ${id}`);
+
+    const isOwner = article.userId === userId || isModerator;
+    if (!isOwner) throw throwAuthorizationError(`You cannot perform this action`);
+
     const deleted = await dbWrite.$transaction(async (tx) => {
       const article = await tx.article.delete({ where: { id }, select: { coverId: true } });
-      if (!article) return null;
 
       await tx.file.deleteMany({ where: { entityId: id, entityType: 'Article' } });
 
       return article;
     });
-    if (!deleted) throw throwNotFoundError(`No article with id ${id}`);
 
     if (deleted.coverId) await deleteImageById({ id: deleted.coverId });
     await articlesSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Delete }]);

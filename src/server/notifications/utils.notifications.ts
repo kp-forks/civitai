@@ -17,6 +17,7 @@ import { imageNotifications } from '~/server/notifications/image.notifications';
 import { clubNotifications } from '~/server/notifications/club.notifications';
 import { creatorsProgramNotifications } from '~/server/notifications/creators-program.notifications';
 import { followNotifications } from '~/server/notifications/follow.notifications';
+import { cosmeticShopNotifications } from '~/server/notifications/cosmetic-shop.notifications';
 
 const notificationProcessors = {
   ...mentionNotifications,
@@ -37,6 +38,7 @@ const notificationProcessors = {
   ...clubNotifications,
   ...creatorsProgramNotifications,
   ...followNotifications,
+  ...cosmeticShopNotifications,
 };
 
 // Sort notifications by priority and group them by priority
@@ -64,8 +66,11 @@ export function getNotificationMessage(notification: Omit<BareNotification, 'id'
 
 function getNotificationTypes() {
   const notificationTypes: string[] = [];
-  const notificationCategoryTypes: Record<string, { displayName: string; type: string }[]> = {};
-  for (const [type, { displayName, toggleable, category }] of Object.entries(
+  const notificationCategoryTypes: Record<
+    string,
+    { displayName: string; type: string; defaultDisabled: boolean }[]
+  > = {};
+  for (const [type, { displayName, toggleable, category, defaultDisabled }] of Object.entries(
     notificationProcessors
   )) {
     if (toggleable === false) continue;
@@ -73,6 +78,7 @@ function getNotificationTypes() {
     notificationCategoryTypes[category]!.push({
       type,
       displayName,
+      defaultDisabled: defaultDisabled ?? false,
     });
     notificationTypes.push(type);
   }

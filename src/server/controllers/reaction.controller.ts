@@ -1,7 +1,7 @@
 import { toggleReaction } from './../services/reaction.service';
 import { ToggleReactionInput } from '~/server/schema/reaction.schema';
 import { Context } from '~/server/createContext';
-import { handleLogError, throwDbError } from '~/server/utils/errorHandling';
+import { handleLogError, throwBadRequestError, throwDbError } from '~/server/utils/errorHandling';
 import { dbRead } from '../db/client';
 import { ReactionType } from '../clickhouse/client';
 import { encouragementReward, goodContentReward } from '~/server/rewards';
@@ -9,6 +9,9 @@ import {
   NsfwLevelDeprecated,
   getNsfwLevelDeprecatedReverseMapping,
 } from '~/shared/constants/browsingLevel.constants';
+import { getContestsFromEntity } from '~/server/services/collection.service';
+import dayjs from 'dayjs';
+import { isFutureDate } from '~/utils/date-helpers';
 
 async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | 'created') {
   const shared = {
@@ -33,7 +36,7 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
         return {
           type: `Image_${action}`,
           nsfw: getNsfwLevelDeprecatedReverseMapping(image.nsfwLevel),
-          userId: image.userId,
+          ownerId: image.userId,
           ...shared,
         };
       }
@@ -53,7 +56,7 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
         return {
           type: `Post_${action}`,
           nsfw: getNsfwLevelDeprecatedReverseMapping(post.nsfwLevel),
-          userId: post.userId,
+          ownerId: post.userId,
           ...shared,
         };
       }
@@ -73,7 +76,7 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
         return {
           type: `Article_${action}`,
           nsfw: getNsfwLevelDeprecatedReverseMapping(article.nsfwLevel),
-          userId: article.userId,
+          ownerId: article.userId,
           ...shared,
         };
       }
@@ -87,7 +90,7 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
         return {
           type: `Comment_${action}`,
           nsfw: NsfwLevelDeprecated.None,
-          userId: commentOld.userId,
+          ownerId: commentOld.userId,
           ...shared,
         };
       }
@@ -101,7 +104,7 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
         return {
           type: `CommentV2_${action}`,
           nsfw: NsfwLevelDeprecated.None,
-          userId: commentV2.userId,
+          ownerId: commentV2.userId,
           ...shared,
         };
       }
@@ -115,7 +118,7 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
         return {
           type: `Question_${action}`,
           nsfw: NsfwLevelDeprecated.None,
-          userId: question?.userId,
+          ownerId: question?.userId,
           ...shared,
         };
       }
@@ -129,7 +132,7 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
         return {
           type: `Answer_${action}`,
           nsfw: NsfwLevelDeprecated.None,
-          userId: answer.userId,
+          ownerId: answer.userId,
           ...shared,
         };
       }
@@ -143,7 +146,7 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
         return {
           type: `BountyEntry_${action}`,
           nsfw: NsfwLevelDeprecated.None,
-          userId: bountyEntry?.userId,
+          ownerId: bountyEntry?.userId,
           ...shared,
         };
       }
@@ -159,6 +162,27 @@ export const toggleReactionHandler = async ({
   input: ToggleReactionInput;
 }) => {
   try {
+    if (input.entityType === 'image') {
+      // We are only doing this for image contests for now. Because the user
+      // gets an instant feedback, this shouldn't have too bad an impact if any at all.
+      const contests = await getContestsFromEntity({
+        entityType: input.entityType,
+        entityId: input.entityId,
+      });
+
+      if (
+        contests.find(
+          (contest) =>
+            !!contest.metadata?.votingPeriodStart &&
+            isFutureDate(contest.metadata?.votingPeriodStart)
+        )
+      ) {
+        throw throwBadRequestError(
+          'Cannot react to an image in a contest before the voting period starts.'
+        );
+      }
+    }
+
     const result = await toggleReaction({ ...input, userId: ctx.user.id });
     const trackerEvent = await getTrackerEvent(input, result);
     if (trackerEvent) {
@@ -178,7 +202,7 @@ export const toggleReactionHandler = async ({
               type: input.entityType,
               reactorId: ctx.user.id,
               entityId: input.entityId,
-              ownerId: trackerEvent?.userId,
+              ownerId: trackerEvent?.ownerId,
             },
             ctx.ip
           )
@@ -189,7 +213,7 @@ export const toggleReactionHandler = async ({
               type: input.entityType,
               reactorId: ctx.user.id,
               entityId: input.entityId,
-              ownerId: trackerEvent?.userId,
+              ownerId: trackerEvent?.ownerId,
             },
             ctx.ip
           )

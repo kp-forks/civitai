@@ -15,6 +15,7 @@ export namespace Orchestrator {
     | 'Rejected'
     | 'LateRejected'
     | 'Deleted'
+    | 'Canceled'
     | 'Expired'
     | 'ClaimExpired';
 
@@ -42,7 +43,9 @@ export namespace Orchestrator {
   export type TaintJobByIdPayload = { reason: string; context?: MixedObject };
 
   export namespace Training {
-    export type CopyAssetJob = Orchestrator.Job<{ found?: boolean; fileSize?: number }>;
+    export type CopyAssetJob = Orchestrator.Job<{ found?: boolean; fileSize?: number }> & {
+      lastEvent: { type: string };
+    };
     export type CopyAssetJobPayload = {
       jobId: string;
       assetName: string;
@@ -55,6 +58,8 @@ export namespace Orchestrator {
     export type ClearAssetsJobResponse = Orchestrator.JobResponse<ClearAssetsJob>;
 
     const imageResourceTrainingJobInputDryRunSchema = z.object({
+      priority: z.union([z.number(), z.enum(['high', 'normal', 'low'])]),
+      // interruptible: z.boolean(),
       model: z.string(),
       cost: z.number(),
       trainingData: z.string(),
@@ -165,6 +170,9 @@ export namespace Orchestrator {
       priority: number;
       providers: string[];
     };
+    export type BustModelCache = {
+      modelVersionId: number;
+    };
     export type PrepareModelResponse = Orchestrator.JobResponse<PrepareModelJob>;
   }
 
@@ -175,6 +183,6 @@ export namespace Orchestrator {
       descending?: boolean;
     };
 
-    export type GetResponse = Array<{ type?: string; dateTime?: string }>;
+    export type GetResponse = Array<{ type?: string; dateTime?: string; context?: MixedObject }>;
   }
 }

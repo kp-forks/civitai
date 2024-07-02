@@ -22,7 +22,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
 
 import { BackButton } from '~/components/BackButton/BackButton';
-import { hiddenLabel } from '~/components/Post/Edit/EditPostControls';
 import { useFormStorage } from '~/hooks/useFormStorage';
 import {
   Form,
@@ -134,7 +133,7 @@ export function ArticleUpsertForm({ article }: Props) {
           (x) => x !== 'userNsfwLevel'
         );
     }
-  }, [userNsfwLevel]);
+  }, [currentUser?.isModerator, userNsfwLevel]);
 
   const [publishing, setPublishing] = useState(false);
 
@@ -263,7 +262,7 @@ export function ArticleUpsertForm({ article }: Props) {
             <InputSimpleImageUpload
               name="coverImage"
               label="Cover Image"
-              description={`Suggested resolution: ${constants.profile.coverImageWidth} x ${constants.profile.coverImageHeight}`}
+              description={`Suggested resolution: ${constants.article.coverImageWidth} x ${constants.article.coverImageHeight}`}
               withAsterisk
             />
             <InputSelect
@@ -403,7 +402,10 @@ function ActionButtons({
       ) : (
         <Text size="xs" color="dimmed">
           Your article is currently{' '}
-          <Tooltip label={hiddenLabel} {...tooltipProps}>
+          <Tooltip
+            label="Click the publish button to make your article public to share with the Civitai community for comments and reactions."
+            {...tooltipProps}
+          >
             <Text span underline>
               hidden
             </Text>

@@ -22,6 +22,7 @@ import {
   GetUserCosmeticsSchema,
   GetUserTagsSchema,
   ReportProhibitedRequestInput,
+  SetLeaderboardEligibilitySchema,
   SetUserSettingsInput,
   ToggleBlockedTagSchema,
   ToggleFavoriteInput,
@@ -32,9 +33,16 @@ import {
   ToggleUserBountyEngagementsInput,
   UserByReferralCodeSchema,
   UserOnboardingSchema,
+  UserSettingsSchema,
   UserUpdateInput,
 } from '~/server/schema/user.schema';
-import { BadgeCosmetic, NamePlateCosmetic } from '~/server/selectors/cosmetic.selector';
+import {
+  BadgeCosmetic,
+  NamePlateCosmetic,
+  ProfileBackgroundCosmetic,
+  ContentDecorationCosmetic,
+  WithClaimKey,
+} from '~/server/selectors/cosmetic.selector';
 import { simpleUserSelect } from '~/server/selectors/user.selector';
 import {
   claimCosmetic,
@@ -70,6 +78,7 @@ import {
   toggleBookmarked,
   toggleReview,
   getUserDownloads,
+  setLeaderboardEligibility,
 } from '~/server/services/user.service';
 import {
   handleLogError,
@@ -86,7 +95,7 @@ import { getUserBuzzBonusAmount } from '../common/user-helpers';
 import { TransactionType } from '../schema/buzz.schema';
 import { createBuzzTransaction } from '../services/buzz.service';
 import { firstDailyFollowReward } from '~/server/rewards/active/firstDailyFollow.reward';
-import { deleteImageById, ingestImage } from '../services/image.service';
+import { deleteImageById, getEntityCoverImage, ingestImage } from '../services/image.service';
 import {
   createCustomer,
   deleteCustomerPaymentMethod,
@@ -98,10 +107,18 @@ import { getUserNotificationCount } from '~/server/services/notification.service
 import { createRecaptchaAssesment } from '../recaptcha/client';
 import { FeatureAccess, toggleableFeatures } from '../services/feature-flags.service';
 import { isDefined } from '~/utils/type-guards';
-import { OnboardingSteps, SearchIndexUpdateQueueAction } from '~/server/common/enums';
+import {
+  OnboardingComplete,
+  OnboardingSteps,
+  SearchIndexUpdateQueueAction,
+} from '~/server/common/enums';
 import { Flags } from '~/shared/utils';
-import { getResourceReviewsByUserId } from '~/server/services/resourceReview.service';
+import {
+  getResourceReviewsByUserId,
+  getUserResourceReview,
+} from '~/server/services/resourceReview.service';
 import { usersSearchIndex } from '~/server/search-index';
+import { onboardingCompletedCounter, onboardingErrorCounter } from '~/server/prom/client';
 
 export const getAllUsersHandler = async ({
   input,
@@ -124,8 +141,10 @@ export const getAllUsersHandler = async ({
 
 export const getUserCreatorHandler = async ({
   input: { username, id, leaderboardId },
+  ctx,
 }: {
   input: GetUserByUsernameSchema;
+  ctx: Context;
 }) => {
   if (!username && !id) throw throwBadRequestError('Must provide username or id');
   if (id === constants.system.user.id || username === constants.system.user.username) return null;
@@ -133,6 +152,7 @@ export const getUserCreatorHandler = async ({
   try {
     const user = await getUserCreator({ username, id, leaderboardId });
     if (!user) throw throwNotFoundError('Could not find user');
+    if (!ctx.user?.isModerator) user.excludeFromLeaderboards = false; // Mask from non-moderators
 
     return user;
   } catch (error) {
@@ -238,6 +258,7 @@ export const completeOnboardingHandler = async ({
   try {
     const { id } = ctx.user;
     const onboarding = Flags.addFlag(ctx.user.onboarding, input.step);
+    const changed = onboarding !== ctx.user.onboarding;
 
     switch (input.step) {
       case OnboardingSteps.TOS:
@@ -291,7 +312,11 @@ export const completeOnboardingHandler = async ({
         ).catch(handleLogError);
         break;
     }
+    const isComplete = onboarding === OnboardingComplete;
+    if (isComplete && changed && onboardingCompletedCounter) onboardingCompletedCounter.inc();
   } catch (e) {
+    const err = e as Error;
+    if (!err.message.includes('constraint failed')) onboardingErrorCounter?.inc();
     if (e instanceof TRPCError) throw e;
     throw throwDbError(e);
   }
@@ -308,6 +333,8 @@ export const updateUserHandler = async ({
     id,
     badgeId,
     nameplateId,
+    profileDecorationId,
+    profileBackgroundId,
     showNsfw,
     username,
     source,
@@ -325,8 +352,6 @@ export const updateUserHandler = async ({
     if (!valid) throw throwBadRequestError('Invalid avatar URL');
   }
 
-  const isSettingCosmetics = badgeId !== undefined && nameplateId !== undefined;
-
   try {
     const user = await getUserById({ id, select: { profilePictureId: true } });
     if (!user) throw throwNotFoundError(`No user with id ${id}`);
@@ -339,6 +364,16 @@ export const updateUserHandler = async ({
     if (nameplateId) payloadCosmeticIds.push(nameplateId);
     else if (nameplateId === null)
       await unequipCosmeticByType({ userId: id, type: CosmeticType.NamePlate });
+
+    if (profileDecorationId) payloadCosmeticIds.push(profileDecorationId);
+    else if (profileDecorationId === null)
+      await unequipCosmeticByType({ userId: id, type: CosmeticType.ProfileDecoration });
+
+    if (profileBackgroundId) payloadCosmeticIds.push(profileBackgroundId);
+    else if (profileBackgroundId === null)
+      await unequipCosmeticByType({ userId: id, type: CosmeticType.ProfileBackground });
+
+    const isSettingCosmetics = payloadCosmeticIds.length > 0;
 
     const updatedUser = await updateUserById({
       id,
@@ -365,8 +400,6 @@ export const updateUserHandler = async ({
           : undefined,
       },
     });
-
-    await usersSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Update }]);
 
     // Delete old profilePic and ingest new one
     if (user.profilePictureId && profilePicture && user.profilePictureId !== profilePicture.id) {
@@ -402,6 +435,8 @@ export const updateUserHandler = async ({
         ip: ctx.ip,
       });
     }
+
+    await usersSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Update }]);
 
     return updatedUser;
   } catch (error) {
@@ -723,7 +758,17 @@ export async function toggleFavoriteHandler({
   input: ToggleFavoriteInput;
   ctx: DeepNonNullable<Context>;
 }) {
-  const { id: userId } = ctx.user;
+  const { id: userId, muted } = ctx.user;
+  if (muted) return false;
+
+  // Toggle review (on/off)
+  const reviewResult = await toggleReview({
+    modelId,
+    modelVersionId,
+    userId,
+    setTo,
+  });
+
   // If favoriting, also bookmark and notify
   if (setTo) {
     // Toggle notifications
@@ -741,18 +786,23 @@ export async function toggleFavoriteHandler({
       userId,
       setTo,
     });
+  } else {
+    // Need dbWrite to avoid propagation lag
+    const userModelReviews = await getUserResourceReview({ userId, modelId, tx: dbWrite });
+
+    // Remove it from bookmark collection if no reviews
+    if (!userModelReviews?.length)
+      // Toggle to bookmark collection
+      await toggleBookmarked({
+        type: 'Model',
+        entityId: modelId,
+        userId,
+        setTo,
+      });
   }
 
-  if (ctx.user.muted) return false;
-
-  // Toggle review (on/off)
-  const reviewResult = await toggleReview({
-    modelId,
-    modelVersionId,
-    userId,
-    setTo,
-  });
   await redis.del(`user:${userId}:model-engagements`);
+
   return reviewResult;
 }
 
@@ -929,17 +979,60 @@ export const getUserCosmeticsHandler = async ({
     const user = await getUserCosmetics({ equipped, userId });
     if (!user) throw throwNotFoundError(`No user with id ${userId}`);
 
+    const inUseCosmeticEntities = user.cosmetics
+      .map(({ equippedToId, equippedToType }) =>
+        equippedToId && equippedToType
+          ? { entityType: equippedToType, entityId: equippedToId }
+          : null
+      )
+      .filter(isDefined);
+    const coverImages = await getEntityCoverImage({ entities: inUseCosmeticEntities });
+
     const cosmetics = user.cosmetics.reduce(
-      (acc, { obtainedAt, cosmetic }) => {
+      (acc, { obtainedAt, equippedToId, equippedToType, claimKey, cosmetic, forId, forType }) => {
         const { type, data, ...rest } = cosmetic;
+        const sharedData = {
+          ...rest,
+          type,
+          obtainedAt,
+          claimKey,
+          inUse: !!equippedToId,
+          entityImage: coverImages.find(
+            (x) => x.entityId === equippedToId && x.entityType === equippedToType
+          ),
+          forId,
+          forType,
+        };
+
         if (type === CosmeticType.Badge)
-          acc.badges.push({ ...rest, data: data as BadgeCosmetic['data'], obtainedAt });
+          acc.badges.push({ ...sharedData, data: data as BadgeCosmetic['data'] });
         else if (type === CosmeticType.NamePlate)
-          acc.nameplates.push({ ...rest, data: data as NamePlateCosmetic['data'], obtainedAt });
+          acc.nameplates.push({ ...sharedData, data: data as NamePlateCosmetic['data'] });
+        else if (type === CosmeticType.ProfileDecoration)
+          acc.profileDecorations.push({
+            ...sharedData,
+            data: data as ContentDecorationCosmetic['data'],
+          });
+        else if (type === CosmeticType.ContentDecoration)
+          acc.contentDecorations.push({
+            ...sharedData,
+            data: data as ContentDecorationCosmetic['data'],
+          });
+        else if (type === CosmeticType.ProfileBackground)
+          acc.profileBackground.push({
+            ...sharedData,
+            data: data as ProfileBackgroundCosmetic['data'],
+          });
 
         return acc;
       },
-      { badges: [] as BadgeCosmetic[], nameplates: [] as NamePlateCosmetic[] }
+      {
+        badges: [] as WithClaimKey<BadgeCosmetic>[],
+        nameplates: [] as WithClaimKey<NamePlateCosmetic>[],
+        profileDecorations: [] as WithClaimKey<ContentDecorationCosmetic>[],
+        profileBackground: [] as WithClaimKey<ProfileBackgroundCosmetic>[],
+        contentDecorations: [] as WithClaimKey<ContentDecorationCosmetic>[],
+      }
     );
 
     return cosmetics;
@@ -1005,6 +1098,7 @@ export const reportProhibitedRequestHandler = async ({
 }) => {
   await ctx.track.prohibitedRequest({
     prompt: input.prompt ?? '{error capturing prompt}',
+    negativePrompt: input.negativePrompt ?? '{error capturing negativePrompt}',
     source: input.source,
   });
   if (ctx.user.isModerator) return false;
@@ -1181,7 +1275,7 @@ export const getUserSettingsHandler = async ({ ctx }: { ctx: DeepNonNullable<Con
     const settings = await getUserSettings(id);
 
     // Limits it to the input type
-    return settings as SetUserSettingsInput;
+    return settings as UserSettingsSchema;
   } catch (error) {
     throw throwDbError(error);
   }
@@ -1247,3 +1341,17 @@ export const getUserPurchasedRewardsHandler = async ({
     throw throwDbError(error);
   }
 };
+
+export async function setLeaderboardEligibilityHandler({
+  ctx,
+  input,
+}: {
+  ctx: DeepNonNullable<Context>;
+  input: SetLeaderboardEligibilitySchema;
+}) {
+  await setLeaderboardEligibility(input);
+  await ctx.track.userActivity({
+    type: input.setTo ? 'ExcludedFromLeaderboard' : 'UnexcludedFromLeaderboard',
+    targetUserId: input.id,
+  });
+}

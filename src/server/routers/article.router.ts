@@ -24,7 +24,9 @@ export const articleRouter = router({
   getInfinite: publicProcedure
     .input(getInfiniteArticlesSchema)
     .use(isFlagProtected('articles'))
-    .query(({ input, ctx }) => getArticles({ ...input, sessionUser: ctx?.user })),
+    .query(({ input, ctx }) =>
+      getArticles({ ...input, sessionUser: ctx?.user, include: ['cosmetics'] })
+    ),
   getCivitaiNews: publicProcedure
     .use(edgeCacheIt({ ttl: CacheTTL.sm }))
     .query(() => getCivitaiNews()),
@@ -44,6 +46,8 @@ export const articleRouter = router({
   delete: protectedProcedure
     .input(getByIdSchema)
     .use(isFlagProtected('articleCreate'))
-    .mutation(({ input }) => deleteArticleById(input)),
+    .mutation(({ input, ctx }) =>
+      deleteArticleById({ ...input, userId: ctx.user.id, isModerator: ctx.user.isModerator })
+    ),
   getAllForImageProcessing: protectedProcedure.query(() => getAllArticlesForImageProcessing()),
 });

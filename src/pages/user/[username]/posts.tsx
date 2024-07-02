@@ -39,22 +39,10 @@ export default function UserPostsPage() {
   const viewingDraft = section === 'draft';
   const features = useFeatureFlags();
 
-  const Wrapper = useMemo(
-    () =>
-      function Wrapper({ children }: { children: React.ReactNode }) {
-        return features.profileOverhaul ? (
-          <Box mt="md">{children}</Box>
-        ) : (
-          <Tabs.Panel value="/posts">{children}</Tabs.Panel>
-        );
-      },
-    [features.profileOverhaul]
-  );
-
   if (!query.username) return <NotFound />;
 
   return (
-    <Wrapper>
+    <Box mt="md">
       <MasonryProvider
         columnWidth={constants.cardSizes.image}
         maxColumnCount={7}
@@ -73,7 +61,7 @@ export default function UserPostsPage() {
                   }}
                 />
               )}
-              <Group spacing={8} noWrap>
+              <Group spacing={8} ml="auto" noWrap>
                 <SortFilter
                   type="posts"
                   variant="button"
@@ -94,7 +82,7 @@ export default function UserPostsPage() {
           </Stack>
         </MasonryContainer>
       </MasonryProvider>
-    </Wrapper>
+    </Box>
   );
 }
 

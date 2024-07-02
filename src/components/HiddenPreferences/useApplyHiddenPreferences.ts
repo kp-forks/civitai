@@ -21,9 +21,9 @@ export function useApplyHiddenPreferences<
   showImageless,
   disabled,
   isRefetching,
-  hiddenImages,
-  hiddenUsers,
-  hiddenTags,
+  hiddenImages = [],
+  hiddenUsers = [],
+  hiddenTags = [],
   browsingLevel: browsingLevelOverride,
   allowLowerLevels,
 }: {
@@ -46,52 +46,46 @@ export function useApplyHiddenPreferences<
 
   const hiddenPreferences = useHiddenPreferencesContext();
 
-  const { items, hidden } = useMemo(
-    () => {
-      const preferences = { ...hiddenPreferences };
-      if (hiddenImages)
-        preferences.hiddenImages = new Map([
-          ...preferences.hiddenImages,
-          ...hiddenImages.map((id): [number, boolean] => [id, true]),
-        ]);
-      if (hiddenUsers)
-        preferences.hiddenUsers = new Map([
-          ...preferences.hiddenUsers,
-          ...hiddenUsers.map((id): [number, boolean] => [id, true]),
-        ]);
-      if (hiddenTags) {
-        preferences.hiddenTags = new Map([
-          ...preferences.hiddenTags,
-          ...hiddenTags.map((id): [number, boolean] => [id, true]),
-        ]);
-      }
-      const { items, hidden } = filterPreferences({
-        type,
-        data,
-        showHidden,
-        showImageless,
-        disabled,
-        browsingLevel,
-        hiddenPreferences: preferences,
-        currentUser,
-        allowLowerLevels,
-      });
-
-      return {
-        items,
-        hidden,
-      };
-    },
-    // eslint-disable-next-line
-  [
+  // We need to stringify the hidden preferences to trigger a re-render when they change.
+  const stringified = JSON.stringify([...hiddenImages, ...hiddenUsers, ...hiddenTags]);
+  const { items, hidden } = useMemo(() => {
+    const preferences = { ...hiddenPreferences };
+    if (hiddenImages.length > 0)
+      preferences.hiddenImages = new Map([
+        ...preferences.hiddenImages,
+        ...hiddenImages.map((id): [number, boolean] => [id, true]),
+      ]);
+    if (hiddenUsers.length > 0)
+      preferences.hiddenUsers = new Map([
+        ...preferences.hiddenUsers,
+        ...hiddenUsers.map((id): [number, boolean] => [id, true]),
+      ]);
+    if (hiddenTags.length > 0) {
+      preferences.hiddenTags = new Map([
+        ...preferences.hiddenTags,
+        ...hiddenTags.map((id): [number, boolean] => [id, true]),
+      ]);
+    }
+    const { items, hidden } = filterPreferences({
+      type,
       data,
-      hiddenPreferences,
+      showHidden,
+      showImageless,
       disabled,
       browsingLevel,
-    ]
-  );
+      hiddenPreferences: preferences,
+      currentUser,
+      allowLowerLevels,
+    });
 
-  useEffect(() => setPrevious(items), [data]);
+    return {
+      items,
+      hidden,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, hiddenPreferences, stringified, showHidden, disabled, browsingLevel]);
+
+  useEffect(() => setPrevious(items), [items]);
 
   // We will not be counting `noImages` because the user can't do anything about these.
   const hiddenCount =
@@ -159,6 +153,7 @@ function filterPreferences<
           const userId = model.user.id;
           const isOwner = userId === currentUser?.id;
           if ((isOwner || isModerator) && model.nsfwLevel === 0) return true;
+          if (showHidden && !hiddenModels.get(model.id)) return false;
           if (!Flags.intersects(model.nsfwLevel, browsingLevel)) {
             hidden.browsingLevel++;
             return false;
@@ -179,6 +174,7 @@ function filterPreferences<
           return true;
         })
         .map(({ images, ...x }) => {
+          const isModelOwner = x.user.id === currentUser?.id;
           const filteredImages =
             images?.filter((i) => {
               const userId = i.userId;
@@ -204,7 +200,7 @@ function filterPreferences<
             hidden.noImages++;
           }
 
-          return sortedImages.length || showImageless
+          return sortedImages.length || (showImageless && (isModelOwner || isModerator))
             ? {
                 ...x,
                 images: filteredImages,

@@ -29,13 +29,7 @@ const featureFlags = createFeatureFlags({
     description: `Generate images with any supported AI resource. This is a beta feature, so please report any issues you find!`,
     availability: ['public'],
   },
-  enhancedSearch: {
-    toggleable: true,
-    default: true,
-    displayName: 'Search (Beta)',
-    description: `We're improving our search experience! This is a beta feature, so please report any issues you find!`,
-    availability: ['public'],
-  },
+  enhancedSearch: ['public'],
   alternateHome: ['public'],
   collections: ['public'],
   air: {
@@ -44,13 +38,6 @@ const featureFlags = createFeatureFlags({
     displayName: 'AI Resource Identifier',
     description: `Show the Civitai AIR on resources for easy use within the Civitai Services API or Civitai Comfy Nodes.`,
     availability: ['user'],
-  },
-  modelCardV2: {
-    toggleable: true,
-    default: true,
-    displayName: 'Model Card V2',
-    description: `A fresh style for model cards with more information and a better layout.`,
-    availability: ['public'],
   },
   profileCollections: ['public'],
   imageSearch: ['dev'],
@@ -66,14 +53,8 @@ const featureFlags = createFeatureFlags({
   bounties: ['public'],
   newsroom: ['public'],
   safety: ['mod'],
-  profileOverhaul: {
-    toggleable: true,
-    default: true,
-    displayName: 'Profile v2 (Beta)',
-    description: `An improved user profile experience to boast around.`,
-    availability: ['public'],
-  },
   csamReports: ['granted'],
+  reviewTrainingData: ['granted'],
   clubs: ['mod'],
   createClubs: ['mod', 'granted'],
   moderateTags: ['granted'],
@@ -89,6 +70,8 @@ const featureFlags = createFeatureFlags({
   vault: ['mod'],
   draftMode: ['mod'],
   membershipsV2: ['mod'],
+  cosmeticShop: ['public'],
+  impersonation: ['granted'],
 });
 export const featureFlagKeys = Object.keys(featureFlags) as FeatureFlagKey[];
 

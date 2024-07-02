@@ -4,16 +4,14 @@ import {
   Checkbox,
   Card,
   Group,
-  Button,
-  Text,
   useMantineTheme,
   Badge,
   Title,
+  Button,
 } from '@mantine/core';
 import { useQueryImages } from '~/components/Image/image.utils';
 import { InViewLoader } from '~/components/InView/InViewLoader';
 import { NoContent } from '~/components/NoContent/NoContent';
-import { trpc } from '~/utils/trpc';
 import { ImagesProvider } from '~/components/Image/Providers/ImagesProvider';
 import { useCallback } from 'react';
 import { MasonryColumns } from '~/components/MasonryColumns/MasonryColumns';
@@ -24,18 +22,23 @@ import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
 import { useInView } from '~/hooks/useInView';
 import { useCsamImageSelectStore } from '~/components/Csam/useCsamImageSelect.store';
 import { useCsamContext } from '~/components/Csam/CsamProvider';
-import { Stepper } from '~/components/Stepper/Stepper';
 import { MasonryContainer } from '~/components/MasonryColumns/MasonryContainer';
 import { MasonryProvider } from '~/components/MasonryColumns/MasonryProvider';
 import { ScrollArea } from '~/components/ScrollArea/ScrollArea';
 import { ImageSort } from '~/server/common/enums';
 
-export function CsamImageSelection() {
+export function CsamImageSelection({ onNext }: { onNext: () => void }) {
   const { userId, user } = useCsamContext();
 
   // TODO - get all images for user, don't use this util unless we provide a way to get all images regardless of ingestion status
-  const { images, isLoading, fetchNextPage, hasNextPage, isRefetching } = useQueryImages(
-    { username: user?.username ?? undefined, sort: ImageSort.Newest },
+  const {
+    flatData: images,
+    isLoading,
+    fetchNextPage,
+    hasNextPage,
+    isRefetching,
+  } = useQueryImages(
+    { username: user?.username ?? undefined, sort: ImageSort.Newest, include: [], pending: true },
     { applyHiddenPreferences: false, enabled: !!user }
   );
 
@@ -49,7 +52,7 @@ export function CsamImageSelection() {
         <Loader />
       </Center>
     );
-  if (!images.length) return <NoContent p="xl" message="No images found for this user" />;
+  if (!images?.length) return <NoContent p="xl" message="No images found for this user" />;
 
   return (
     <MasonryProvider
@@ -98,7 +101,9 @@ export function CsamImageSelection() {
             <Badge>
               Selected: <SelectedCount />
             </Badge>
-            <Stepper.NextButton disabled={!hasSelected}>Next</Stepper.NextButton>
+            <Button disabled={!hasSelected} onClick={onNext}>
+              Next
+            </Button>
           </Group>
         </MasonryContainer>
       </Card>

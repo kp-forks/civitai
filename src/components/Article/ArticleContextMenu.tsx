@@ -8,19 +8,21 @@ import { LoginRedirect } from '~/components/LoginRedirect/LoginRedirect';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { openContext } from '~/providers/CustomModalsProvider';
 import { ReportEntity } from '~/server/schema/report.schema';
-import type { ArticleGetAll } from '~/server/services/article.service';
+import type { ArticleGetAll, ArticleGetAllRecord } from '~/server/services/article.service';
 import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
 import { trpc } from '~/utils/trpc';
 import { AddToCollectionMenuItem } from '~/components/MenuItems/AddToCollectionMenuItem';
-import { CollectionType } from '@prisma/client';
+import { CollectionType, CosmeticEntity } from '@prisma/client';
 import React from 'react';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { ToggleLockComments } from '../CommentsV2';
 import { IconLock } from '@tabler/icons-react';
 import { ToggleSearchableMenuItem } from '../MenuItems/ToggleSearchableMenuItem';
+import { AddArtFrameMenuItem } from '~/components/Decorations/AddArtFrameMenuItem';
+import type { ArticleGetInfinite } from '~/types/router';
 
 export function ArticleContextMenu({ article, ...props }: Props) {
-  const queryUtils = trpc.useContext();
+  const queryUtils = trpc.useUtils();
   const router = useRouter();
   const currentUser = useCurrentUser();
   const isModerator = currentUser?.isModerator ?? false;
@@ -121,6 +123,14 @@ export function ArticleContextMenu({ article, ...props }: Props) {
         />
         {currentUser && (isOwner || isModerator) && (
           <>
+            {isOwner && article.coverImage && !atDetailsPage && (
+              <AddArtFrameMenuItem
+                entityType={CosmeticEntity.Article}
+                entityId={article.id}
+                image={article.coverImage}
+                currentCosmetic={article.cosmetic}
+              />
+            )}
             <Menu.Item
               color="red"
               icon={<IconTrash size={14} stroke={1.5} />}
@@ -192,5 +202,5 @@ export function ArticleContextMenu({ article, ...props }: Props) {
 }
 
 type Props = Omit<ActionIconProps, 'variant' | 'onClick'> & {
-  article: Omit<ArticleGetAll[number], 'stats'>;
+  article: Omit<ArticleGetAllRecord, 'stats'>;
 };

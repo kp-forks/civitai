@@ -27,6 +27,7 @@ import { toggleReactionInput } from '~/server/schema/comment.schema';
 import {
   guardedProcedure,
   middleware,
+  moderatorProcedure,
   protectedProcedure,
   publicProcedure,
   router,
@@ -116,5 +117,5 @@ export const commentRouter = router({
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .mutation(toggleLockHandler),
-  setTosViolation: protectedProcedure.input(getByIdSchema).mutation(setTosViolationHandler),
+  setTosViolation: moderatorProcedure.input(getByIdSchema).mutation(setTosViolationHandler),
 });

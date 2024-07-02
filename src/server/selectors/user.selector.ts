@@ -22,7 +22,7 @@ export const userWithCosmeticsSelect = Prisma.validator<Prisma.UserSelect>()({
   // TODO.leaderboard: uncomment when migration is done
   // leaderboardShowcase: true,
   cosmetics: {
-    where: { equippedAt: { not: null } },
+    where: { equippedAt: { not: null }, equippedToId: null },
     select: {
       data: true,
       cosmetic: {
@@ -54,6 +54,7 @@ export const userWithProfileSelect = Prisma.validator<Prisma.UserSelect>()({
       equippedAt: true,
       cosmeticId: true,
       obtainedAt: true,
+      claimKey: true,
       data: true,
       cosmetic: {
         select: {
@@ -63,6 +64,7 @@ export const userWithProfileSelect = Prisma.validator<Prisma.UserSelect>()({
           source: true,
           name: true,
           description: true,
+          videoUrl: true,
         },
       },
     },
@@ -90,6 +92,9 @@ export const userWithProfileSelect = Prisma.validator<Prisma.UserSelect>()({
       favoriteCountAllTime: true,
       thumbsUpCountAllTime: true,
       followerCountAllTime: true,
+      reactionCountAllTime: true,
+      uploadCountAllTime: true,
+      generationCountAllTime: true,
     },
   },
   profile: {

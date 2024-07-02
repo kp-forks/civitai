@@ -13,24 +13,32 @@ import {
 } from '~/server/selectors/modelVersion.selector';
 import { getImagesForModelVersion } from '~/server/services/image.service';
 import { getVaeFiles } from '~/server/services/model.service';
-import { PublicEndpoint } from '~/server/utils/endpoint-helpers';
+import { MixedAuthEndpoint } from '~/server/utils/endpoint-helpers';
 import { getPrimaryFile } from '~/server/utils/model-helpers';
 import { reduceToBasicFileMetadata } from '~/server/services/model-file.service';
+import { Session } from 'next-auth';
+import { stringifyAIR } from '~/utils/string-helpers';
+import { safeDecodeURIComponent } from '~/utils/string-helpers';
 
 const hashesAsObject = (hashes: { type: ModelHashType; hash: string }[]) =>
   hashes.reduce((acc, { type, hash }) => ({ ...acc, [type]: hash }), {});
 
 const schema = z.object({ id: z.preprocess((val) => Number(val), z.number()) });
-export default PublicEndpoint(async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default MixedAuthEndpoint(async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse,
+  user: Session['user'] | undefined
+) {
   const results = schema.safeParse(req.query);
   if (!results.success)
     return res.status(400).json({ error: `Invalid id: ${results.error.flatten().fieldErrors.id}` });
 
   const { id } = results.data;
   if (!id) return res.status(400).json({ error: 'Missing modelVersionId' });
+  const status = user?.isModerator ? undefined : 'Published';
 
   const modelVersion = await dbRead.modelVersion.findFirst({
-    where: { id, status: 'Published' },
+    where: { id, status },
     select: getModelVersionApiSelect,
   });
 
@@ -61,6 +69,12 @@ export async function prepareModelVersionResponse(
 
   return {
     ...version,
+    air: stringifyAIR({
+      baseModel: version.baseModel,
+      type: model.type,
+      modelId: version.modelId,
+      id: version.id,
+    }),
     stats: {
       downloadCount: metrics[0]?.downloadCount ?? 0,
       ratingCount: metrics[0]?.ratingCount ?? 0,
@@ -73,7 +87,7 @@ export async function prepareModelVersionResponse(
           ...file,
           metadata: reduceToBasicFileMetadata(metadata),
           hashes: hashesAsObject(hashes),
-          name: getDownloadFilename({ model, modelVersion: version, file }),
+          name: safeDecodeURIComponent(getDownloadFilename({ model, modelVersion: version, file })),
           primary: primaryFile.id === file.id,
           downloadUrl: `${baseUrl.origin}${createModelFileDownloadUrl({
             versionId: version.id,

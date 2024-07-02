@@ -11,11 +11,9 @@ import {
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { isDefined } from '~/utils/type-guards';
-import { calculateGenerationBill } from '~/server/common/generation';
 import { RunType } from '~/store/generation.store';
-import { uniqBy } from 'lodash';
+import { uniqBy } from 'lodash-es';
 import {
-  CreateGenerationRequestInput,
   GenerateFormModel,
   GenerationRequestTestRunSchema,
   generationStatusSchema,
@@ -27,10 +25,8 @@ import { Generation } from '~/server/services/generation/generation.types';
 import { findClosest } from '~/utils/number-helpers';
 import { removeEmpty } from '~/utils/object-helpers';
 import { showErrorNotification } from '~/utils/notifications';
-import { ModelType } from '@prisma/client';
-import { useDebouncedValue } from '@mantine/hooks';
-import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
+import { getBaseModelSetKey } from '~/shared/constants/generation.constants';
 
 export const useGenerationFormStore = create<Partial<GenerateFormModel>>()(
   persist(() => ({}), { name: 'generation-form-2', version: 0 })
@@ -38,7 +34,7 @@ export const useGenerationFormStore = create<Partial<GenerateFormModel>>()(
 
 export const useDerivedGenerationState = () => {
   const status = useGenerationStatus();
-  const { totalCost, isCalculatingCost, costEstimateError } = useEstimateTextToImageJobCost();
+  const { cost, ready, isCalculatingCost, costEstimateError } = useEstimateTextToImageJobCost();
 
   const selectedResources = useGenerationFormStore(({ resources = [], model }) => {
     return model ? resources.concat([model]).filter(isDefined) : resources.filter(isDefined);
@@ -91,13 +87,14 @@ export const useDerivedGenerationState = () => {
   const draft = useGenerationFormStore((x) => x.draft);
 
   return {
-    totalCost,
+    cost,
+    ready,
     baseModel,
     hasResources,
     trainedWords,
     additionalResourcesCount,
     samplerCfgOffset,
-    isSDXL: baseModel === 'SDXL',
+    isSDXL: baseModel === 'SDXL' || baseModel === 'Pony',
     isLCM,
     unstableResources,
     isCalculatingCost,
@@ -127,24 +124,31 @@ export const useGenerationStatus = () => {
 export const useEstimateTextToImageJobCost = () => {
   const status = useGenerationStatus();
   const model = useGenerationFormStore((state) => state.model);
-  const baseModel = model?.baseModel ? getBaseModelSetKey(model.baseModel) : undefined;
 
   const input = useGenerationFormStore(
     useCallback(
       (state) => {
-        const { aspectRatio, steps, quantity, sampler, draft } = state;
+        const { aspectRatio, steps, quantity, sampler, draft, staging, resources } = state;
+        const baseModel = model?.baseModel ? getBaseModelSetKey(model.baseModel) : undefined;
         if (!status.charge || !baseModel) return null;
 
         return {
+          model: status.checkResourceAvailability
+            ? model?.id ?? generation.defaultValues.model.id
+            : undefined,
           baseModel: baseModel ?? generation.defaultValues.model.baseModel,
           aspectRatio: aspectRatio ?? generation.defaultValues.aspectRatio,
           steps: steps ?? generation.defaultValues.steps,
           quantity: quantity ?? generation.defaultValues.quantity,
           sampler: sampler ?? generation.defaultValues.sampler,
+          resources: status.checkResourceAvailability
+            ? resources?.map((x) => x.id).sort()
+            : undefined,
+          staging,
           draft,
         };
       },
-      [baseModel, status.charge]
+      [model, status.charge, status.checkResourceAvailability]
     )
   );
 
@@ -156,12 +160,9 @@ export const useEstimateTextToImageJobCost = () => {
     enabled: !!input,
   });
 
-  const totalCost = status.charge
-    ? Math.ceil((result?.jobs ?? []).reduce((acc, job) => acc + job.cost, 0))
-    : 0;
-
   return {
-    totalCost,
+    ...(result ?? {}),
+    cost: status.charge ? result?.cost ?? 0 : 0,
     isCalculatingCost: input ? isLoading : false,
     costEstimateError: !isLoading && isError,
   };
@@ -225,6 +226,8 @@ export const getFormData = (
 ) => {
   const state = useGenerationFormStore.getState();
   let formData = { ...state, ...params };
+  if (state.negativePrompt && !params?.negativePrompt)
+    formData.negativePrompt = params?.negativePrompt;
 
   formData.model = resources.find((x) => x.modelType === 'Checkpoint') ?? formData.model;
 
@@ -349,13 +352,6 @@ export const getClosestAspectRatio = (width?: number, height?: number, baseModel
 };
 
 // TODO - move these somewhere that makes more sense
-export const getBaseModelSetKey = (baseModel?: string) => {
-  if (!baseModel) return undefined;
-  return Object.entries(baseModelSets).find(
-    ([key, baseModels]) => key === baseModel || baseModels.includes(baseModel as BaseModel)
-  )?.[0] as BaseModelSetType | undefined;
-};
-
 export const getBaseModelSet = (baseModel?: string) => {
   if (!baseModel) return undefined;
   return Object.entries(baseModelSets).find(

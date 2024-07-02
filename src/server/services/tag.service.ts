@@ -1,7 +1,9 @@
 import { Prisma, TagSource, TagTarget, TagType } from '@prisma/client';
+import { uniq } from 'lodash-es';
+import { SessionUser } from 'next-auth';
 import { TagVotableEntityType, VotableTagModel } from '~/libs/tags';
 import { constants } from '~/server/common/constants';
-import { TagSort, SearchIndexUpdateQueueAction, NsfwLevel } from '~/server/common/enums';
+import { SearchIndexUpdateQueueAction, TagSort } from '~/server/common/enums';
 
 import { dbRead, dbWrite } from '~/server/db/client';
 import { redis, REDIS_KEYS } from '~/server/redis/client';
@@ -13,26 +15,25 @@ import {
   GetVotableTagsSchema2,
   ModerateTagsSchema,
 } from '~/server/schema/tag.schema';
-import { tagsSearchIndex } from '~/server/search-index';
 import { imageTagCompositeSelect, modelTagCompositeSelect } from '~/server/selectors/tag.selector';
+import { clearImageTagIdsCache } from '~/server/services/image.service';
 import { getCategoryTags, getSystemTags } from '~/server/services/system-cache';
 import {
   HiddenImages,
   HiddenModels,
   ImplicitHiddenImages,
 } from '~/server/services/user-preferences.service';
-import { clearImageTagIdsCache } from '~/server/services/image.service';
+import { Flags } from '~/shared/utils';
 import { removeEmpty } from '~/utils/object-helpers';
-import { SessionUser } from 'next-auth';
 
 export const getTagWithModelCount = ({ name }: { name: string }) => {
   return dbRead.$queryRaw<[{ id: number; name: string; count: number }]>`
     SELECT "public"."Tag"."id",
-      "public"."Tag"."name",
-      CAST(COUNT("public"."TagsOnModels"."tagId") AS INTEGER) as count
+           "public"."Tag"."name",
+           CAST(COUNT("public"."TagsOnModels"."tagId") AS INTEGER) as count
     FROM "public"."Tag"
-    LEFT JOIN "public"."TagsOnModels" ON "public"."Tag"."id" = "public"."TagsOnModels"."tagId"
-    LEFT JOIN "public"."Model" ON "public"."TagsOnModels"."modelId" = "public"."Model"."id"
+           LEFT JOIN "public"."TagsOnModels" ON "public"."Tag"."id" = "public"."TagsOnModels"."tagId"
+           LEFT JOIN "public"."Model" ON "public"."TagsOnModels"."modelId" = "public"."Model"."id"
     WHERE "public"."Tag"."name" LIKE ${name}
       AND "public"."Model"."status" = 'Published'
       AND "public"."TagsOnModels"."modelId" IS NOT NULL
@@ -55,9 +56,8 @@ export const getTag = ({ id }: { id: number }) => {
 export const getTagCountForImages = async (imageIds: number[]) => {
   if (!imageIds.length) return {};
   const results = await dbRead.$queryRaw<{ imageId: number; count: number }[]>`
-    SELECT
-      "public"."TagsOnImage"."imageId",
-      CAST(COUNT("public"."TagsOnImage"."tagId") AS INTEGER) as count
+    SELECT "public"."TagsOnImage"."imageId",
+           CAST(COUNT("public"."TagsOnImage"."tagId") AS INTEGER) as count
     FROM "public"."TagsOnImage"
     WHERE "public"."TagsOnImage"."imageId" IN (${Prisma.join(imageIds)})
     GROUP BY "public"."TagsOnImage"."imageId"
@@ -178,15 +178,14 @@ export const getTags = async ({
   const tagsRaw = await dbRead.$queryRaw<
     { id: number; name: string; isCategory?: boolean; nsfwLevel?: number }[]
   >`
-    SELECT
-      t."id",
-      t."name"
-      ${isCategory}
-      ${isNsfwLevel}
+    SELECT t."id",
+           t."name"
+             ${isCategory}
+               ${isNsfwLevel}
     FROM "Tag" t
-    ${Prisma.raw(orderBy.includes('r.') ? `LEFT JOIN "TagRank" r ON r."tagId" = t."id"` : '')}
+      ${Prisma.raw(orderBy.includes('r.') ? `LEFT JOIN "TagRank" r ON r."tagId" = t."id"` : '')}
     WHERE ${Prisma.join(AND, ' AND ')}
-    ORDER BY ${Prisma.raw(tagsOrderBy.join(', '))}
+    ORDER BY ${Prisma.raw(orderBy)}
     LIMIT ${take} OFFSET ${skip}
   `;
 
@@ -209,7 +208,8 @@ export const getTags = async ({
     })
   );
   const [{ count }] = await dbRead.$queryRaw<{ count: number }[]>`
-    SELECT COUNT(*)::int count FROM "Tag" t
+    SELECT COUNT(*)::int count
+    FROM "Tag" t
     WHERE ${Prisma.join(AND, ' AND ')}
   `;
 
@@ -223,7 +223,10 @@ export const getVotableTags = async ({
   id,
   take = 20,
   isModerator = false,
-}: GetVotableTagsSchema & { userId?: number; isModerator?: boolean }) => {
+}: GetVotableTagsSchema & {
+  userId?: number;
+  isModerator?: boolean;
+}) => {
   let results: VotableTagModel[] = [];
   if (type === 'model') {
     const tags = await dbRead.modelTag.findMany({
@@ -302,11 +305,19 @@ export const getVotableTags = async ({
   return results;
 };
 
-async function getVotableImageTags({ ids, user }: GetVotableTagsSchema2 & { user: SessionUser }) {
+export async function getVotableImageTags({
+  ids,
+  user,
+  nsfwLevel,
+}: {
+  ids: number[];
+  user: SessionUser;
+  nsfwLevel?: number;
+}) {
   const imageTags = await dbRead.imageTag.findMany({
     where: {
       imageId: { in: ids },
-      tagNsfwLevel: { in: [NsfwLevel.PG13, NsfwLevel.R, NsfwLevel.X, NsfwLevel.XXX] },
+      tagNsfwLevel: nsfwLevel ? { in: Flags.instanceToArray(nsfwLevel) } : undefined,
     },
     select: { ...imageTagCompositeSelect, imageId: true },
     orderBy: { score: 'desc' },
@@ -347,10 +358,11 @@ export async function getVotableTags2({
   ids,
   user,
   type,
+  nsfwLevel,
 }: GetVotableTagsSchema2 & { user: SessionUser }) {
   const voteCutoff = new Date(Date.now() + constants.tagVoting.voteDuration);
   const tagsFn = type === 'image' ? getVotableImageTags : getVotableImageTags;
-  const tags = await tagsFn({ ids, type, user });
+  const tags = await tagsFn({ ids, user, nsfwLevel });
   return tags.filter(
     (tag) =>
       tag.concrete ||
@@ -380,7 +392,8 @@ export const removeTagVotes = async ({ userId, type, id, tags }: TagVotingInput)
   const isTagIds = typeof tags[0] === 'number';
   const tagIn = (isTagIds ? tags : tags.map((tag) => `'${tag}'`)).join(', ');
   await dbWrite.$executeRawUnsafe(`
-    DELETE FROM "${voteTable}"
+    DELETE
+    FROM "${voteTable}"
     WHERE "userId" = ${userId}
       AND "${type}Id" = ${id}
       ${
@@ -423,19 +436,24 @@ export const addTagVotes = async ({
   const voteTable = type === 'model' ? 'TagsOnModelsVote' : 'TagsOnImageVote';
   await dbWrite.$executeRawUnsafe(`
     INSERT INTO "${voteTable}" ("userId", "tagId", "${type}Id", "vote")
-    SELECT
-      ${userId}, id, ${id}, ${vote}
+    SELECT ${userId},
+           id,
+           ${id},
+           ${vote}
     FROM "Tag"
     WHERE ${tagSelector} IN (${tagIn})
-    ON CONFLICT ("userId", "tagId", "${type}Id") DO UPDATE SET "vote" = ${vote}, "createdAt" = NOW()
+    ON CONFLICT ("userId", "tagId", "${type}Id") DO UPDATE SET "vote"      = ${vote},
+                                                               "createdAt" = NOW()
   `);
 
   // If voting up a tag
   if (vote > 0) {
     // Check if it's a moderation tag
     const [{ count }] = await dbRead.$queryRawUnsafe<{ count: number }[]>(`
-      SELECT COUNT(*)::int "count" FROM "Tag"
-      WHERE ${tagSelector} IN (${tagIn}) AND "type" = 'Moderation'
+      SELECT COUNT(*)::int "count"
+      FROM "Tag"
+      WHERE ${tagSelector} IN (${tagIn})
+        AND "type" = 'Moderation'
     `);
     if (count > 0) await clearCache(userId, type); // Clear cache if it is
   }
@@ -452,31 +470,33 @@ export const addTags = async ({ tags, entityIds, entityType, relationship }: Adj
   if (entityType === 'model') {
     await dbWrite.$executeRawUnsafe(`
       INSERT INTO "TagsOnModels" ("modelId", "tagId")
-      SELECT
-        m."id", t."id"
+      SELECT m."id",
+             t."id"
       FROM "Model" m
-      JOIN "Tag" t ON t.${tagSelector} IN (${tagIn})
+             JOIN "Tag" t ON t.${tagSelector} IN (${tagIn})
       WHERE m."id" IN (${entityIds.join(', ')})
       ON CONFLICT DO NOTHING
     `);
   } else if (entityType === 'image') {
     await dbWrite.$executeRawUnsafe(`
       INSERT INTO "TagsOnImage" ("imageId", "tagId")
-      SELECT
-        i."id", t."id"
+      SELECT i."id",
+             t."id"
       FROM "Image" i
-      JOIN "Tag" t ON t.${tagSelector} IN (${tagIn})
+             JOIN "Tag" t ON t.${tagSelector} IN (${tagIn})
       WHERE i."id" IN (${entityIds.join(', ')})
-      ON CONFLICT ("imageId", "tagId") DO UPDATE SET "disabled" = false, "needsReview" = false, automated = false
+      ON CONFLICT ("imageId", "tagId") DO UPDATE SET "disabled"    = false,
+                                                     "needsReview" = false,
+                                                     automated     = false
     `);
     updateImageNSFWLevels(entityIds);
   } else if (entityType === 'article') {
     await dbWrite.$executeRawUnsafe(`
       INSERT INTO "TagsOnArticle" ("articleId", "tagId")
-      SELECT
-        a."id", t."id"
+      SELECT a."id",
+             t."id"
       FROM "Article" a
-      JOIN "Tag" t ON t.${tagSelector} IN (${tagIn})
+             JOIN "Tag" t ON t.${tagSelector} IN (${tagIn})
       WHERE a."id" IN (${entityIds.join(', ')})
       ON CONFLICT DO NOTHING
     `);
@@ -485,10 +505,11 @@ export const addTags = async ({ tags, entityIds, entityType, relationship }: Adj
 
     await dbWrite.$executeRawUnsafe(`
       INSERT INTO "TagsOnTags" ("fromTagId", "toTagId", type)
-      SELECT
-        fromTag."id", toTag."id", '${relationship}'::"TagsOnTagsType"
+      SELECT fromTag."id",
+             toTag."id",
+             '${relationship}'::"TagsOnTagsType"
       FROM "Tag" toTag
-      JOIN "Tag" fromTag ON fromTag.${tagSelector} IN (${tagIn})
+             JOIN "Tag" fromTag ON fromTag.${tagSelector} IN (${tagIn})
       WHERE toTag."id" IN (${entityIds.join(', ')})
       ON CONFLICT DO NOTHING
     `);
@@ -516,6 +537,44 @@ export const addTags = async ({ tags, entityIds, entityType, relationship }: Adj
   }
 };
 
+export const findOrCreateTagsByName = async (tags: string[]) => {
+  const uniqTags = uniq(tags.map((t) => t.toLowerCase().trim()));
+
+  const foundTags = await dbWrite.tag.findMany({
+    where: { name: { in: uniqTags } },
+    select: { id: true, name: true },
+  });
+
+  const tagCache: { [p: string]: undefined | number } = Object.fromEntries(
+    uniqTags.map((t) => [t, undefined])
+  );
+
+  for (const tag of foundTags) tagCache[tag.name] = tag.id;
+
+  const newTags = Object.entries(tagCache)
+    .filter(([, id]) => id === undefined)
+    .map((t) => t[0]);
+  if (newTags.length > 0) {
+    // prisma...my dude. you really can't return the created rows?
+    await dbWrite.tag.createMany({
+      data: newTags.map((x) => ({
+        name: x,
+        type: TagType.UserGenerated,
+        target: [TagTarget.Post],
+      })),
+    });
+    const newFoundTags = await dbWrite.tag.findMany({
+      where: { name: { in: newTags } },
+      select: { id: true, name: true },
+    });
+    for (const tag of newFoundTags) {
+      tagCache[tag.name] = tag.id;
+    }
+  }
+
+  return tagCache;
+};
+
 export const disableTags = async ({ tags, entityIds, entityType }: AdjustTagsSchema) => {
   const isTagIds = typeof tags[0] === 'number';
   // Explicit cast to number[] or string[] to avoid type errors
@@ -527,34 +586,37 @@ export const disableTags = async ({ tags, entityIds, entityType }: AdjustTagsSch
       UPDATE "TagsOnModels"
       SET "disabled" = true
       WHERE "modelId" IN (${entityIds.join(', ')})
-      ${
-        isTagIds
-          ? `AND "tagId" IN (${tagIn})`
-          : `AND "tagId" IN (SELECT id FROM "Tag" WHERE name IN (${tagIn}))`
-      }
+        ${
+          isTagIds
+            ? `AND "tagId" IN (${tagIn})`
+            : `AND "tagId" IN (SELECT id FROM "Tag" WHERE name IN (${tagIn}))`
+        }
     `);
   } else if (entityType === 'image') {
     await dbWrite.$executeRawUnsafe(`
       UPDATE "TagsOnImage"
-      SET "disabled" = true, "needsReview" = false, "disabledAt" = NOW()
+      SET "disabled"    = true,
+          "needsReview" = false,
+          "disabledAt"  = NOW()
       WHERE "imageId" IN (${entityIds.join(', ')})
-      ${
-        isTagIds
-          ? `AND "tagId" IN (${tagIn})`
-          : `AND "tagId" IN (SELECT id FROM "Tag" WHERE name IN (${tagIn}))`
-      }
+        ${
+          isTagIds
+            ? `AND "tagId" IN (${tagIn})`
+            : `AND "tagId" IN (SELECT id FROM "Tag" WHERE name IN (${tagIn}))`
+        }
     `);
     updateImageNSFWLevels(entityIds);
     await clearImageTagIdsCache(entityIds);
   } else if (entityType === 'tag') {
     await dbWrite.$executeRawUnsafe(`
-      DELETE FROM "TagsOnTags"
+      DELETE
+      FROM "TagsOnTags"
       WHERE "toTagId" IN (${entityIds.join(', ')})
-      ${
-        isTagIds
-          ? `AND "fromTagId" IN (${tagIn})`
-          : `AND "fromTagId" IN (SELECT id FROM "Tag" WHERE name IN (${tagIn}))`
-      }
+        ${
+          isTagIds
+            ? `AND "fromTagId" IN (${tagIn})`
+            : `AND "fromTagId" IN (SELECT id FROM "Tag" WHERE name IN (${tagIn}))`
+        }
     `);
   }
 };
@@ -571,12 +633,12 @@ export const moderateTags = async ({ entityIds, entityType, disable }: ModerateT
   } else if (entityType === 'image') {
     await dbWrite.$executeRawUnsafe(`
       UPDATE "TagsOnImage"
-      SET
-        "disabled" = ${disable},
-        "needsReview" = false,
-        "automated" = false,
-        "disabledAt" = ${disable ? 'NOW()' : 'null'}
-      WHERE "needsReview" = true AND "imageId" IN (${entityIds.join(', ')})
+      SET "disabled"    = ${disable},
+          "needsReview" = false,
+          "automated"   = false,
+          "disabledAt"  = ${disable ? 'NOW()' : 'null'}
+      WHERE "needsReview" = true
+        AND "imageId" IN (${entityIds.join(', ')})
     `);
 
     // Update nsfw baseline
@@ -600,16 +662,10 @@ export const deleteTags = async ({ tags }: DeleteTagsSchema) => {
   const tagIn = (isTagIds ? castedTags : castedTags.map((tag) => `'${tag}'`)).join(', ');
 
   await dbWrite.$executeRawUnsafe(`
-    DELETE FROM "Tag"
+    DELETE
+    FROM "Tag"
     WHERE ${tagSelector} IN (${tagIn})
   `);
-
-  // TODO.lrojas: Support tag names for deletion
-  if (isTagIds) {
-    await tagsSearchIndex.queueUpdate(
-      castedTags.map((id) => ({ id: id as number, action: SearchIndexUpdateQueueAction.Delete }))
-    );
-  }
 };
 
 export const getTypeCategories = async ({

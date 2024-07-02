@@ -39,6 +39,7 @@ const transactionTypes = [
   TransactionType[TransactionType.Training],
   TransactionType[TransactionType.Purchase],
   TransactionType[TransactionType.Bounty],
+  TransactionType[TransactionType.Sell],
 ];
 
 const defaultFilters = {
@@ -126,11 +127,15 @@ export default function UserTransactions() {
         ) : transactions.length ? (
           <Stack spacing="md">
             {transactions.map((transaction) => {
-              const { amount, date, fromUser, toUser, description, details } = transaction;
+              const { amount, date, fromUser, toUser, details } = transaction;
+              let { description } = transaction;
               const isDebit = amount < 0;
               const { url, label }: { url?: string; label?: string } = details
                 ? parseBuzzTransactionDetails(details as BuzzTransactionDetails)
                 : {};
+              if (label) {
+                description = description?.replace('Content', `A ${label.toLowerCase()}`);
+              }
 
               return (
                 <Card key={date.toISOString()} withBorder>

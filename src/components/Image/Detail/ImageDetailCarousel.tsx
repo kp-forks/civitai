@@ -80,7 +80,7 @@ export function ImageDetailCarousel({ className }: GalleryCarouselProps) {
   ));
 
   const hasMultipleImages = images.length > 1;
-  const canCreate = flags.imageGeneration && !!image.meta?.prompt;
+  const canCreate = flags.imageGeneration && !!image.meta?.prompt && !image.hideMeta;
 
   return (
     <div ref={setRef} className={cx(classes.root, className)}>
@@ -250,7 +250,7 @@ export function ImageDetailCarousel({ className }: GalleryCarouselProps) {
                     }
                     type={image.type}
                     style={{ maxHeight: '100%', maxWidth: '100%' }}
-                    width="original"
+                    width={image?.width}
                     anim
                     controls
                     fadeIn
@@ -261,7 +261,6 @@ export function ImageDetailCarousel({ className }: GalleryCarouselProps) {
           </>
         )}
       </ImageGuard2>
-
       {images.length <= maxIndicators && hasMultipleImages && (
         <div className={classes.indicators}>{indicators}</div>
       )}

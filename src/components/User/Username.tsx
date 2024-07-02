@@ -38,28 +38,68 @@ export function Username({
         size={size}
         weight={500}
         lineClamp={1}
-        sx={{ verticalAlign: 'middle' }}
+        sx={(theme) => ({
+          verticalAlign: 'middle',
+          filter:
+            theme.colorScheme === 'dark'
+              ? 'drop-shadow(1px 1px 1px rgba(0, 0, 0, 0.8))'
+              : 'drop-shadow(1px 1px 1px rgba(0, 0, 0, 0.2))',
+        })}
         inherit={inherit}
         {...additionalTextProps}
       >
         {username}
       </Text>
-      {badge?.data.url && (
-        <Tooltip color="dark" label={badge.name} withArrow withinPortal>
-          {badge.data.animated ? (
-            <div style={{ display: 'flex', width: badgeSize }}>
-              <EdgeMedia src={badge.data.url} alt={badge.name} width="original" />
-            </div>
-          ) : (
-            <div style={{ display: 'flex' }}>
-              <EdgeMedia src={badge.data.url} alt={badge.name} width={badgeSize} />
-            </div>
-          )}
-        </Tooltip>
-      )}
+      <BadgeDisplay badge={badge as BadgeCosmetic} badgeSize={badgeSize} />
     </Group>
   );
 }
+
+export const BadgeDisplay = ({
+  badge,
+  badgeSize,
+  zIndex,
+}: {
+  badge?: BadgeCosmetic;
+  badgeSize?: number;
+  zIndex?: number;
+}) => {
+  if (!badge?.data.url || badgeSize === 0) return null;
+
+  const shadowDistance = Math.max(1, Math.round((badgeSize ?? 24) / 24));
+  const filter = `drop-shadow(${shadowDistance}px ${shadowDistance}px 1px rgba(0, 0, 0, 0.8))`;
+
+  return (
+    <Tooltip
+      color="dark"
+      label={
+        <div style={{ textAlign: 'center', padding: 4 }}>
+          <div>{badge.name}</div>
+          <div style={{ fontSize: 'small', color: 'gray' }}>{badge.description}</div>
+        </div>
+      }
+      withArrow
+      withinPortal
+    >
+      {badge.data.animated ? (
+        <div
+          style={{
+            display: 'flex',
+            width: badgeSize,
+            zIndex,
+            filter,
+          }}
+        >
+          <EdgeMedia src={badge.data.url} alt={badge.name} />
+        </div>
+      ) : (
+        <div style={{ display: 'flex', zIndex, filter }}>
+          <EdgeMedia src={badge.data.url} alt={badge.name} width={badgeSize} />
+        </div>
+      )}
+    </Tooltip>
+  );
+};
 
 type Props = {
   username?: string | null;

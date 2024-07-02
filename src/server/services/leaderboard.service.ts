@@ -19,7 +19,7 @@ export async function isLeaderboardPopulated() {
         FROM "LeaderboardResult" lr
         JOIN "Leaderboard" l ON l.id = lr."leaderboardId"
         WHERE l.query != '' AND date = current_date::date
-      ) = (SELECT COUNT(*) FROM "Leaderboard" WHERE query != '') as "populated"
+      ) = (SELECT COUNT(*) FROM "Leaderboard" WHERE query != '' AND active) as "populated"
     `;
 
   return populated;
@@ -139,18 +139,21 @@ export async function getLeaderboard(input: GetLeaderboardInput) {
       (
         SELECT
           jsonb_agg(jsonb_build_object(
-            'id', c.id,
-            'data', c.data,
-            'type', c.type,
-            'source', c.source,
-            'name', c.name,
-            'leaderboardId', c."leaderboardId",
-            'leaderboardPosition', c."leaderboardPosition"
+            'data', uc.data,
+            'cosmetic', jsonb_build_object(
+              'id', c.id,
+              'data', c.data,
+              'type', c.type,
+              'source', c.source,
+              'name', c.name,
+              'leaderboardId', c."leaderboardId",
+              'leaderboardPosition', c."leaderboardPosition"
+            )
           ))
         FROM "UserCosmetic" uc
         JOIN "Cosmetic" c ON c.id = uc."cosmeticId"
         AND "equippedAt" IS NOT NULL
-        WHERE uc."userId" = lr."userId"
+        WHERE uc."userId" = lr."userId" AND uc."equippedToId" IS NULL
       ) cosmetics,
       (
         SELECT jsonb_build_object(

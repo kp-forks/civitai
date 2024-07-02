@@ -1,7 +1,7 @@
 import { cacheIt, edgeCacheIt } from './../middleware.trpc';
 import {
   getEntitiesCoverImageHandler,
-  getImageDetailHandler,
+  getImageContestCollectionDetailsHandler,
   getImageHandler,
   getImageResourcesHandler,
   getImagesAsPostsInfiniteHandler,
@@ -17,6 +17,11 @@ import {
   createImageSchema,
   updateImageNsfwLevelSchema,
   imageRatingReviewInput,
+  reportCsamImagesSchema,
+  addOrRemoveImageToolsSchema,
+  updateImageToolsSchema,
+  updateImageTechniqueSchema,
+  addOrRemoveImageTechniquesSchema,
 } from './../schema/image.schema';
 import {
   deleteImageHandler,
@@ -24,7 +29,7 @@ import {
   moderateImageHandler,
 } from '~/server/controllers/image.controller';
 import { dbRead } from '~/server/db/client';
-import { getByIdSchema, infiniteQuerySchema } from '~/server/schema/base.schema';
+import { getByIdSchema } from '~/server/schema/base.schema';
 import {
   middleware,
   moderatorProcedure,
@@ -45,6 +50,14 @@ import {
   getImagesForModelVersionCache,
   updateImageNsfwLevel,
   getImageRatingRequests,
+  addImageTools,
+  removeImageTools,
+  updateImageTools,
+  updateImageTechniques,
+  removeImageTechniques,
+  addImageTechniques,
+  getImageDetail,
+  getImageGenerationData,
 } from '~/server/services/image.service';
 import { CacheTTL } from '~/server/common/constants';
 import { z } from 'zod';
@@ -78,7 +91,7 @@ export const imageRouter = router({
   create: protectedProcedure
     .input(createImageSchema)
     .mutation(({ input, ctx }) => createImage({ ...input, userId: ctx.user.id })),
-  createArticleCoverImage: protectedProcedure
+  createArticleCoverImage: moderatorProcedure
     .input(createImageSchema.extend({ userId: z.number() }))
     .mutation(({ input }) => createArticleCoverImage({ ...input })),
   ingestArticleImages: protectedProcedure
@@ -90,12 +103,9 @@ export const imageRouter = router({
     .use(isOwnerOrModerator)
     .mutation(deleteImageHandler),
   setTosViolation: moderatorProcedure.input(getByIdSchema).mutation(setTosViolationHandler),
-  // Unused
-  // update: protectedProcedure
-  //   .input(updateImageSchema)
-  //   .use(isOwnerOrModerator)
-  //   .mutation(updateImageHandler),
-  getDetail: publicProcedure.input(getByIdSchema).query(getImageDetailHandler),
+  getDetail: publicProcedure
+    .input(getByIdSchema)
+    .query(({ input }) => getImageDetail({ ...input })),
   getInfinite: publicProcedure.input(getInfiniteImagesSchema).query(getInfiniteImagesHandler),
   getImagesForModelVersion: publicProcedure
     .input(getByIdSchema)
@@ -108,14 +118,13 @@ export const imageRouter = router({
     .input(getByIdSchema)
     .use(
       edgeCacheIt({
-        ttl: CacheTTL.day, // Cache is purged on remove resource
-        tags: (i) => ['image-resources', `image-resources-${i.id}`],
+        ttl: CacheTTL.sm,
       })
     )
     .query(getImageResourcesHandler),
-  removeResource: protectedProcedure
+  removeResource: moderatorProcedure
     .input(getByIdSchema)
-    .mutation(({ input, ctx }) => removeImageResource({ ...input, user: ctx.user })),
+    .mutation(({ input }) => removeImageResource(input)),
   rescan: moderatorProcedure.input(getByIdSchema).mutation(({ input }) => ingestImageById(input)),
   getEntitiesCoverImage: publicProcedure
     .input(getEntitiesCoverImage)
@@ -124,19 +133,57 @@ export const imageRouter = router({
     .input(imageReviewQueueInputSchema)
     .query(getModeratorReviewQueueHandler),
   getModeratorPOITags: moderatorProcedure.query(() => getModeratorPOITags()),
-  getNotFoundImages: publicProcedure
+  get404Images: publicProcedure
     .use(edgeCacheIt({ ttl: CacheTTL.month }))
     .use(cacheIt({ ttl: CacheTTL.week }))
     .query(() => get404Images()),
   reportCsamImages: moderatorProcedure
-    .input(z.number().array())
-    .mutation(({ input: imageIds, ctx }) =>
-      reportCsamImages({ imageIds, user: ctx.user, ip: ctx.ip })
-    ),
+    .input(reportCsamImagesSchema)
+    .mutation(({ input, ctx }) => reportCsamImages({ ...input, user: ctx.user, ip: ctx.ip })),
   updateImageNsfwLevel: protectedProcedure
     .input(updateImageNsfwLevelSchema)
     .mutation(({ input, ctx }) => updateImageNsfwLevel({ ...input, user: ctx.user })),
   getImageRatingRequests: moderatorProcedure
     .input(imageRatingReviewInput)
     .query(({ input, ctx }) => getImageRatingRequests({ ...input, user: ctx.user })),
+  getGenerationData: publicProcedure
+    .input(getByIdSchema)
+    // TODO: Add edgeCacheIt back after fixing the cache invalidation.
+    // .use(
+    //   edgeCacheIt({
+    //     ttl: CacheTTL.day, // Cache is purged on remove resource
+    //     tags: (i) => ['image-generation-data', `image-generation-data-${i.id}`],
+    //   })
+    // )
+    .query(({ input }) => getImageGenerationData(input)),
+
+  // #region [tools]
+  addTools: protectedProcedure
+    .input(addOrRemoveImageToolsSchema)
+    .mutation(({ input, ctx }) => addImageTools({ ...input, user: ctx.user })),
+  removeTools: protectedProcedure
+    .input(addOrRemoveImageToolsSchema)
+    .mutation(({ input, ctx }) => removeImageTools({ ...input, user: ctx.user })),
+  updateTools: protectedProcedure
+    .input(updateImageToolsSchema)
+    .mutation(({ input, ctx }) => updateImageTools({ ...input, user: ctx.user })),
+  // #endregion
+
+  // #region [techniques]
+  addTechniques: protectedProcedure
+    .input(addOrRemoveImageTechniquesSchema)
+    .mutation(({ input, ctx }) => addImageTechniques({ ...input, user: ctx.user })),
+  removeTechniques: protectedProcedure
+    .input(addOrRemoveImageTechniquesSchema)
+    .mutation(({ input, ctx }) => removeImageTechniques({ ...input, user: ctx.user })),
+  updateTechniques: protectedProcedure
+    .input(updateImageTechniqueSchema)
+    .mutation(({ input, ctx }) => updateImageTechniques({ ...input, user: ctx.user })),
+  // #endregion
+
+  // #region [collections]
+  getContestCollectionDetails: publicProcedure
+    .input(getByIdSchema)
+    .query(({ input }) => getImageContestCollectionDetailsHandler({ input })),
+  // #endregion
 });

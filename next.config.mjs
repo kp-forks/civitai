@@ -159,12 +159,17 @@ export default defineNextConfig(withAxiom({
       },
       {
         source: '/canny/bugs',
-        destination: 'https://feedback.civitai.com/?b=bug',
+        destination: 'https://civitai-team.myfreshworks.com/login/auth/civitai?client_id=451979510707337272&redirect_uri=https%3A%2F%2Fcivitai.freshdesk.com%2Ffreshid%2Fcustomer_authorize_callback%3Fhd%3Dsupport.civitai.com',
         permanent: true,
       },
       {
         source: '/bugs',
-        destination: 'https://feedback.civitai.com/?b=bug',
+        destination: 'https://civitai-team.myfreshworks.com/login/auth/civitai?client_id=451979510707337272&redirect_uri=https%3A%2F%2Fcivitai.freshdesk.com%2Ffreshid%2Fcustomer_authorize_callback%3Fhd%3Dsupport.civitai.com',
+        permanent: true,
+      },
+      {
+        source: '/support-portal',
+        destination: 'https://civitai-team.myfreshworks.com/login/auth/civitai?client_id=451979510707337272&redirect_uri=https%3A%2F%2Fcivitai.freshdesk.com%2Ffreshid%2Fcustomer_authorize_callback%3Fhd%3Dsupport.civitai.com',
         permanent: true,
       },
       {
@@ -220,6 +225,16 @@ export default defineNextConfig(withAxiom({
       {
         source: '/ad-feedback',
         destination: 'https://forms.clickup.com/8459928/f/825mr-9711/WIMNO6V738T4ZBTPXP',
+        permanent: true,
+      },
+      {
+        source: '/cosmetic-shop',
+        destination: '/shop',
+        permanent: true,
+      },
+      {
+        source: '/shop/cosmetic-shop',
+        destination: '/shop',
         permanent: true,
       }
     ];

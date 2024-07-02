@@ -12,21 +12,30 @@ import { truncate } from 'lodash-es';
 import { constants } from '~/server/common/constants';
 import { ImageGuard2 } from '~/components/ImageGuard/ImageGuard2';
 import { ImageContextMenu } from '~/components/Image/ContextMenu/ImageContextMenu';
+import { AddArtFrameMenuItem } from '~/components/Decorations/AddArtFrameMenuItem';
+import { CosmeticEntity } from '@prisma/client';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
+import { useCardStyles } from '~/components/Cards/Cards.styles';
+import { VideoMetadata } from '~/server/schema/media.schema';
+import { shouldAnimateByDefault } from '~/components/EdgeMedia/EdgeMedia.util';
 
 export function PostsCard({
-  data: { images, id, stats, imageCount, user, modelVersionId },
+  data: { images, id, stats, imageCount, cosmetic, user },
   height,
 }: {
   data: PostsInfiniteModel;
   height?: number;
 }) {
+  const currentUser = useCurrentUser();
   const { ref, inView } = useInView({ rootMargin: '600px' });
-  const { classes, theme } = useStyles();
+  const { classes } = useStyles();
+  const { classes: sharedClasses } = useCardStyles({ aspectRatio: 1 });
 
   const image = images[0];
+  const isOwner = currentUser?.id === user.id;
 
   return (
-    <MasonryCard withBorder shadow="sm" p={0} height={height} ref={ref}>
+    <MasonryCard withBorder shadow="sm" p={0} height={height} ref={ref} frameDecoration={cosmetic}>
       {inView && (
         <>
           <ImageGuard2 image={image} connectType="post" connectId={id}>
@@ -34,16 +43,30 @@ export function PostsCard({
               <>
                 {image.meta && 'civitaiResources' in (image.meta as object) && <OnsiteIndicator />}
 
-                <ImageGuard2.BlurToggle className="absolute top-2 left-2 z-10" />
+                <ImageGuard2.BlurToggle className="absolute left-2 top-2 z-10" />
                 {safe && (
                   <ImageContextMenu
                     image={image}
                     context="post"
-                    className="absolute top-2 right-2 z-10"
+                    className="absolute right-2 top-2 z-10"
+                    additionalMenuItems={
+                      isOwner ? (
+                        <AddArtFrameMenuItem
+                          entityType={CosmeticEntity.Post}
+                          entityId={id}
+                          image={image}
+                          currentCosmetic={cosmetic}
+                        />
+                      ) : null
+                    }
                   />
                 )}
 
-                <RoutedDialogLink name="postDetail" state={{ postId: id }}>
+                <RoutedDialogLink
+                  name="postDetail"
+                  state={{ postId: id }}
+                  className={cosmetic && safe ? sharedClasses.frameAdjustment : undefined}
+                >
                   {!safe ? (
                     <AspectRatio ratio={(image?.width ?? 1) / (image?.height ?? 1)}>
                       <MediaHash {...image} />
@@ -51,6 +74,7 @@ export function PostsCard({
                   ) : (
                     <EdgeMedia
                       src={image.url}
+                      className={sharedClasses.image}
                       name={image.name ?? image.id.toString()}
                       alt={
                         image.meta
@@ -59,10 +83,10 @@ export function PostsCard({
                             })
                           : image.name ?? undefined
                       }
+                      anim={shouldAnimateByDefault(image)}
                       type={image.type}
                       width={450}
                       placeholder="empty"
-                      style={{ width: '100%', position: 'relative' }}
                     />
                   )}
                 </RoutedDialogLink>
@@ -98,10 +122,11 @@ const useStyles = createStyles((theme) => ({
     bottom: 6,
     left: 6,
     borderRadius: theme.radius.sm,
-    background: theme.fn.rgba(
-      theme.colorScheme === 'dark' ? theme.colors.dark[9] : theme.colors.gray[0],
-      0.8
-    ),
+    background:
+      theme.colorScheme === 'dark'
+        ? theme.fn.rgba(theme.colors.dark[6], 0.6)
+        : theme.colors.gray[0],
+    color: theme.colorScheme === 'dark' ? theme.colors.gray[0] : theme.colors.dark[4],
     // backdropFilter: 'blur(13px) saturate(160%)',
     boxShadow: '0 -2px 6px 1px rgba(0,0,0,0.16)',
     padding: 4,

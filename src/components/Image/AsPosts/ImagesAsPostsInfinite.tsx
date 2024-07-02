@@ -52,6 +52,7 @@ import { Flags } from '~/shared/utils';
 import { dialogStore } from '~/components/Dialog/dialogStore';
 import { QS } from '~/utils/qs';
 import { ImageFiltersDropdown } from '~/components/Image/Filters/ImageFiltersDropdown';
+import { useGallerySettings } from '~/components/Image/AsPosts/gallery.utils';
 
 type ModelVersionsProps = { id: number; name: string; modelId: number };
 type ImagesAsPostsInfiniteState = {
@@ -111,7 +112,7 @@ export default function ImagesAsPostsInfinite({
   });
 
   const browsingLevel = useBrowsingLevelDebounced();
-  const { data: gallerySettings } = trpc.model.getGallerySettings.useQuery({ id: model.id });
+  const { gallerySettings } = useGallerySettings({ modelId: model.id });
   let intersection = browsingLevel;
   if (gallerySettings?.level) {
     intersection = Flags.intersection(browsingLevel, gallerySettings.level);
@@ -129,13 +130,22 @@ export default function ImagesAsPostsInfinite({
       }
     );
 
+  const hiddenUsers = useMemo(
+    () => gallerySettings?.hiddenUsers.map((x) => x.id),
+    [gallerySettings?.hiddenUsers]
+  );
+  const hiddenTags = useMemo(
+    () => gallerySettings?.hiddenTags.map((x) => x.id),
+    [gallerySettings?.hiddenTags]
+  );
+
   const flatData = useMemo(() => data?.pages.flatMap((x) => (!!x ? x.items : [])), [data]);
   const { items } = useApplyHiddenPreferences({
     type: 'posts',
     data: flatData,
-    hiddenImages: gallerySettings?.hiddenImages,
-    hiddenUsers: gallerySettings?.hiddenUsers.map((x) => x.id),
-    hiddenTags: gallerySettings?.hiddenTags.map((x) => x.id),
+    hiddenImages: !showHidden ? gallerySettings?.hiddenImages : undefined,
+    hiddenUsers: !showHidden ? hiddenUsers : undefined,
+    hiddenTags: !showHidden ? hiddenTags : undefined,
     browsingLevel: intersection,
   });
 

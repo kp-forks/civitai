@@ -42,6 +42,7 @@ import { CommentBadge } from '~/components/CommentsV2/Comment/CommentBadge';
 import { useMutateComment } from '../commentv2.utils';
 import { CommentReplies } from '../CommentReplies';
 import { constants } from '../../../server/common/constants';
+import { LineClamp } from '~/components/LineClamp/LineClamp';
 
 type Store = {
   id?: number;
@@ -57,6 +58,7 @@ type CommentProps = Omit<GroupProps, 'children'> & {
   viewOnly?: boolean;
   highlight?: boolean;
   resourceOwnerId?: number;
+  borderless?: boolean;
 };
 
 export function Comment({ comment, resourceOwnerId, ...groupProps }: CommentProps) {
@@ -71,6 +73,7 @@ export function CommentContent({
   comment,
   viewOnly,
   highlight: highlightProp,
+  borderless,
   ...groupProps
 }: CommentProps) {
   const { expanded, toggleExpanded, setRootThread } = useRootThreadContext();
@@ -102,12 +105,20 @@ export function CommentContent({
       `${entityType}MaxDepth` in constants.comments
         ? constants.comments[`${entityType}MaxDepth` as keyof typeof constants.comments]
         : constants.comments.maxDepth;
-    if ((level ?? 0) > maxDepth && !isExpanded) {
+
+    if ((level ?? 0) >= maxDepth && !isExpanded) {
       setRootThread('comment', comment.id);
     } else {
       toggleExpanded(comment.id);
     }
   };
+
+  const trimmableEnds = ['<p></p>'];
+  for (const end of trimmableEnds) {
+    if (comment.content.endsWith(end)) {
+      comment.content = comment.content.slice(0, comment.content.lastIndexOf(end));
+    }
+  }
 
   return (
     <Group
@@ -214,10 +225,12 @@ export function CommentContent({
           {!editing ? (
             <>
               <Box my={5}>
-                <RenderHtml
-                  html={comment.content}
-                  sx={(theme) => ({ fontSize: theme.fontSizes.sm })}
-                />
+                <LineClamp lineClamp={3}>
+                  <RenderHtml
+                    html={comment.content}
+                    sx={(theme) => ({ fontSize: theme.fontSizes.sm })}
+                  />
+                </LineClamp>
               </Box>
               {/* COMMENT INTERACTION */}
               <Group spacing={4}>
@@ -251,8 +264,22 @@ export function CommentContent({
               onCancel={() => setReplying(false)}
               replyToCommentId={comment.id}
               className={classes.replyInset}
+              borderless={borderless}
             />
           </Box>
+        )}
+        {replyCount > 0 && !viewOnly && !isExpanded && (
+          <Divider
+            label={
+              <Group spacing="xs" align="center">
+                <Text variant="link" sx={{ cursor: 'pointer' }} onClick={onToggleReplies}>
+                  Show {replyCount} More
+                </Text>
+              </Group>
+            }
+            labelPosition="center"
+            variant="dashed"
+          />
         )}
       </Stack>
       {replyCount > 0 && !viewOnly && (

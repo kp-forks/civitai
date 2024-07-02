@@ -1,11 +1,11 @@
 import { CollectionItemStatus, ImageIngestionStatus, Prisma } from '@prisma/client';
 import { NextApiRequest, NextApiResponse } from 'next';
+import { z } from 'zod';
 import { dbRead } from '~/server/db/client';
+import { dataProcessor } from '~/server/db/db-helpers';
 import { pgDbWrite } from '~/server/db/pgDb';
 import { WebhookEndpoint } from '~/server/utils/endpoint-helpers';
 import { invalidateAllSessions } from '~/server/utils/session-helpers';
-import z from 'zod';
-import { dataProcessor } from '~/server/db/db-helpers';
 import { nsfwBrowsingLevelsFlag } from '~/shared/constants/browsingLevel.constants';
 
 type MigrationType = z.infer<typeof migrationTypes>;
@@ -43,10 +43,10 @@ export default WebhookEndpoint(async (req, res) => {
     //   type: 'users',
     //   fn: migrateUsers,
     // },
-    {
-      type: 'images',
-      fn: migrateImages,
-    },
+    // {
+    //   type: 'images',
+    //   fn: migrateImages,
+    // },
     // {
     //   type: 'posts',
     //   fn: migratePosts,
@@ -63,14 +63,14 @@ export default WebhookEndpoint(async (req, res) => {
     //   type: 'bountyEntries',
     //   fn: migrateBountyEntries,
     // },
-    // {
-    //   type: 'modelVersions',
-    //   fn: migrateModelVersions,
-    // },
-    // {
-    //   type: 'models',
-    //   fn: migrateModels,
-    // },
+    {
+      type: 'modelVersions',
+      fn: migrateModelVersions,
+    },
+    {
+      type: 'models',
+      fn: migrateModels,
+    },
     // {
     //   type: 'collections',
     //   fn: migrateCollections,
@@ -430,13 +430,12 @@ async function migrateModels(req: NextApiRequest, res: NextApiResponse) {
     processor: async ({ start, end, cancelFns }) => {
       const { cancel, result } = await pgDbWrite.cancellableQuery(Prisma.sql`
         WITH level AS (
-          SELECT DISTINCT ON ("modelId")
+          SELECT
             mv."modelId" as "id",
             bit_or(mv."nsfwLevel") "nsfwLevel"
           FROM "ModelVersion" mv
-          JOIN "Model" m on m.id = mv."modelId"
-          WHERE m.id BETWEEN ${start} AND ${end}
-          GROUP BY mv.id
+          WHERE mv."modelId" BETWEEN ${start} AND ${end}
+          GROUP BY mv."modelId"
         )
         UPDATE "Model" m
         SET "nsfwLevel" = (

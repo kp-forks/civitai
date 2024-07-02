@@ -36,10 +36,15 @@ import { useImageStore } from '~/store/image.store';
 import { ImageGuard2 } from '~/components/ImageGuard/ImageGuard2';
 import { ImageContextMenu } from '~/components/Image/ContextMenu/ImageContextMenu';
 import { getIsPublicBrowsingLevel } from '~/shared/constants/browsingLevel.constants';
+import { useCardStyles } from '~/components/Cards/Cards.styles';
+import { ImageMetaPopover2 } from '~/components/Image/Meta/ImageMetaPopover';
+import { VideoMetadata } from '~/server/schema/media.schema';
+import { shouldAnimateByDefault } from '~/components/EdgeMedia/EdgeMedia.util';
 
 export function ImagesCard({ data, height }: { data: ImagesInfiniteModel; height: number }) {
   const { ref, inView } = useInView({ rootMargin: '200% 0px' });
   const { classes, cx } = useStyles();
+  const { classes: sharedClasses } = useCardStyles({ aspectRatio: 1 });
   const { images } = useImagesContext();
   const features = useFeatureFlags();
 
@@ -69,33 +74,47 @@ export function ImagesCard({ data, height }: { data: ImagesInfiniteModel; height
   return (
     <HolidayFrame {...cardDecoration}>
       <RoutedDialogLink name="imageDetail" state={{ imageId: image.id, images }}>
-        <MasonryCard withBorder shadow="sm" p={0} height={height} ref={ref}>
-          <AspectRatio
-            className={classes.blurHash}
-            ratio={(image?.width ?? 1) / (image?.height ?? 1)}
-          >
-            <MediaHash {...image} />
-          </AspectRatio>
-
-          <div className={classes.content} style={{ opacity: inView ? 1 : 0 }}>
-            {inView && (
+        <MasonryCard
+          withBorder
+          shadow="sm"
+          p={0}
+          height={height}
+          ref={ref}
+          frameDecoration={image.cosmetic}
+        >
+          <ImageGuard2 image={image}>
+            {(safe) => (
               <>
-                {onSite && <OnsiteIndicator />}
-                <ImageGuard2 image={image}>
-                  {(safe) => (
+                {!safe && (
+                  <AspectRatio
+                    className={classes.blurHash}
+                    ratio={(image?.width ?? 1) / (image?.height ?? 1)}
+                  >
+                    <MediaHash {...image} />
+                  </AspectRatio>
+                )}
+
+                <div
+                  className={cx(
+                    classes.content,
+                    data.cosmetic && safe && sharedClasses.frameAdjustment
+                  )}
+                  style={{ opacity: inView ? 1 : 0 }}
+                >
+                  {inView && (
                     <>
                       <Group
                         position="apart"
                         align="start"
                         spacing={4}
-                        className="absolute top-2 left-2 right-2 z-10"
+                        className="absolute inset-x-2 top-2 z-10"
                         style={{ pointerEvents: 'none' }}
                       >
                         <ImageGuard2.BlurToggle sx={{ pointerEvents: 'auto' }} />
                         {safe && (
                           <Stack spacing="xs" ml="auto" sx={{ pointerEvents: 'auto' }}>
                             {!isBlocked && <ImageContextMenu image={image} />}
-                            {features.imageGeneration && image.meta && (
+                            {features.imageGeneration && image.meta && !image.hideMeta && (
                               <HoverActionButton
                                 label="Remix"
                                 size={30}
@@ -134,7 +153,7 @@ export function ImagesCard({ data, height }: { data: ImagesInfiniteModel; height
                       {safe && (
                         <EdgeMedia
                           src={image.url}
-                          className={cx({ [classes.blocked]: isBlocked })}
+                          className={cx(sharedClasses.image, { [classes.blocked]: isBlocked })}
                           name={image.name ?? image.id.toString()}
                           alt={
                             image.meta
@@ -143,10 +162,10 @@ export function ImagesCard({ data, height }: { data: ImagesInfiniteModel; height
                                 })
                               : image.name ?? undefined
                           }
+                          anim={shouldAnimateByDefault(image)}
                           type={image.type}
                           width={450}
                           placeholder="empty"
-                          style={{ width: '100%' }}
                           fadeIn
                         />
                       )}
@@ -190,13 +209,8 @@ export function ImagesCard({ data, height }: { data: ImagesInfiniteModel; height
                                 readonly={!safe}
                                 className={classes.reactions}
                               />
-                              {!image.hideMeta && image.meta && (
-                                <ImageMetaPopover
-                                  meta={image.meta}
-                                  generationProcess={image.generationProcess ?? undefined}
-                                  imageId={image.id}
-                                  mainResourceId={image.modelVersionId ?? undefined}
-                                >
+                              {(data.hasMeta || !image.hideMeta) && data.meta && (
+                                <ImageMetaPopover meta={data.meta}>
                                   <ActionIcon variant="transparent" size="lg">
                                     <IconInfoCircle
                                       color="white"
@@ -232,12 +246,13 @@ export function ImagesCard({ data, height }: { data: ImagesInfiniteModel; height
                           </Alert>
                         )}
                       </div>
+                      {onSite && <OnsiteIndicator />}
                     </>
                   )}
-                </ImageGuard2>
+                </div>
               </>
             )}
-          </div>
+          </ImageGuard2>
         </MasonryCard>
       </RoutedDialogLink>
     </HolidayFrame>
@@ -279,10 +294,10 @@ const useStyles = createStyles((theme, _, getRef) => {
     },
     reactions: {
       borderRadius: theme.radius.sm,
-      background: theme.fn.rgba(
-        theme.colorScheme === 'dark' ? theme.colors.dark[6] : theme.colors.gray[0],
-        0.6
-      ),
+      background:
+        theme.colorScheme === 'dark'
+          ? theme.fn.rgba(theme.colors.dark[6], 0.6)
+          : theme.colors.gray[0],
       // backdropFilter: 'blur(5px) saturate(160%)',
       boxShadow: '0 -2px 6px 1px rgba(0,0,0,0.16)',
       padding: 4,
@@ -304,7 +319,6 @@ const useStyles = createStyles((theme, _, getRef) => {
       width: '100%',
       height: '100%',
       zIndex: 1,
-      opacity: 0.7,
     },
     content: {
       position: 'absolute',

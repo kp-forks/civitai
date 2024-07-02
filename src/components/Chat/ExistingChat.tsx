@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Anchor,
   Box,
   Button,
   Center,
@@ -20,6 +21,7 @@ import {
   useMantineTheme,
 } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
+import { NextLink } from '@mantine/next';
 import { ChatMemberStatus, ChatMessageType } from '@prisma/client';
 import {
   IconArrowBack,
@@ -41,8 +43,10 @@ import type { IntermediateRepresentation, OptFn, Opts } from 'linkifyjs';
 import { throttle } from 'lodash-es';
 import Link from 'next/link';
 import React, { ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { ChatActions } from '~/components/Chat/ChatActions';
 import { useChatContext } from '~/components/Chat/ChatProvider';
+import { getLinkHref, linkifyOptions } from '~/components/Chat/util';
 import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
 import { InViewLoader } from '~/components/InView/InViewLoader';
 import { useSignalContext } from '~/components/Signals/SignalsProvider';
@@ -50,6 +54,7 @@ import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
 import { env } from '~/env/client.mjs';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { useIsMobile } from '~/hooks/useIsMobile';
+import { constants } from '~/server/common/constants';
 import { SignalMessages } from '~/server/common/enums';
 import { isTypingOutput } from '~/server/schema/chat.schema';
 import { ChatAllMessages } from '~/types/router';
@@ -625,7 +630,7 @@ function ChatInputBox({
       if (!currentUser) return;
 
       const newEntry = {
-        [currentUser.username]: false,
+        [currentUser.username ?? 'Unknown user']: false,
       };
       const { newTotalStatus, isTypingText } = getTypingStatus(newEntry);
 
@@ -758,58 +763,44 @@ function ChatInputBox({
   );
 }
 
-const civRegex = new RegExp(
-  `^(?:https?:\/\/)?(?:image\.)?(?:${(env.NEXT_PUBLIC_BASE_URL ?? 'civitai.com').replace(
-    /^https?:\/\//,
-    ''
-  )}|civitai.com)`
-);
-// const airRegex = /^(?:urn:air:\w+:\w+:)?civitai:(?<mId>\d+)@(?<mvId>\d+)$/i;
-export const airRegex = /^civitai:(?<mId>\d+)@(?<mvId>\d+)$/i;
+const EmbedLink = ({ href, title }: { href?: string; title: string }) => {
+  if (!href) return <Title order={6}>{title}</Title>;
 
-const renderLink: OptFn<(ir: IntermediateRepresentation) => ReactElement | undefined> = ({
-  attributes,
-  content,
-}) => {
-  const { href, ...props }: { href?: string } = attributes;
-  if (!href) return;
-
-  let newHref: string;
-  const airMatch = href.match(airRegex);
-  if (airMatch && airMatch.groups) {
-    const { mId, mvId } = airMatch.groups;
-    newHref = `/models/${mId}?modelVersionId=${mvId}`;
-  } else {
-    newHref = href.replace(civRegex, '') || '/';
+  if (constants.chat.externalRegex.test(href)) {
+    return (
+      <Anchor href={href} target="_blank" rel="noopener noreferrer" variant="link">
+        <Title order={6}>{title}</Title>
+      </Anchor>
+    );
   }
 
   return (
-    <Link href={newHref} passHref {...props}>
-      <Text variant="link" component="a" style={{ color: 'revert', textDecoration: 'underline' }}>
-        {content}
-      </Text>
-    </Link>
+    <Anchor component={NextLink} href={href} variant="link">
+      <Title order={6}>{title}</Title>
+    </Anchor>
   );
-};
-const validateLink = {
-  url: (value: string) => civRegex.test(value) || airRegex.test(value),
-};
-export const linkifyOptions: Opts = {
-  render: renderLink,
-  validate: validateLink,
 };
 
 const EmbedMessage = ({ content }: { content: string }) => {
   const { classes, cx } = useStyles();
 
-  let contentObj: { title: string | null; description: string | null; image: string | null };
+  let contentObj: {
+    title: string | null;
+    description: string | null;
+    image: string | null;
+    href?: string;
+  };
   try {
     contentObj = JSON.parse(content);
   } catch {
     return <></>;
   }
 
-  if (!contentObj.title && !contentObj.description && !contentObj.image) return <></>;
+  const { title, description, image, href } = contentObj;
+
+  if (!title && !description && !image) return <></>;
+
+  const modHref = getLinkHref(href);
 
   return (
     <Group
@@ -820,15 +811,15 @@ const EmbedMessage = ({ content }: { content: string }) => {
       className={cx(classes.chatMessage)}
       noWrap
     >
-      {(!!contentObj.title || !!contentObj.description) && (
+      {(!!title || !!description) && (
         <Stack>
-          {!!contentObj.title && <Title order={6}>{contentObj.title ?? 'Civitai'}</Title>}
-          {!!contentObj.description && <Text size="xs">{contentObj.description}</Text>}
+          {!!title && <EmbedLink href={modHref} title={title} />}
+          {!!description && <Text size="xs">{description}</Text>}
         </Stack>
       )}
-      {!!contentObj.image && (
+      {!!image && (
         <EdgeMedia
-          src={contentObj.image}
+          src={image}
           width={75}
           height={75}
           alt="Link preview"
@@ -884,6 +875,8 @@ function DisplayMessages({
             ? replyData[replyIds.indexOf(c.referenceMessageId)]
             : undefined;
 
+        const isSystemChat = c.userId === -1;
+
         return (
           <PStack
             component={motion.div}
@@ -895,9 +888,9 @@ function DisplayMessages({
             animate={{ y: 0, opacity: 1 }}
             transition={{ type: 'spring', duration: 0.4 }}
           >
-            {c.userId === -1 && c.contentType === ChatMessageType.Embed ? (
+            {isSystemChat && c.contentType === ChatMessageType.Embed ? (
               <EmbedMessage content={c.content} />
-            ) : c.userId === -1 ? (
+            ) : isSystemChat ? (
               // <Group align="center" position="center">
               //   <Text size="xs">{formatDate(c.createdAt)}</Text>
               //   ...Text (below)
@@ -911,7 +904,13 @@ function DisplayMessages({
                   border: '1px solid gray',
                 }}
               >
-                {c.content}
+                <ReactMarkdown
+                  allowedElements={['a']}
+                  unwrapDisallowed
+                  className="markdown-content"
+                >
+                  {c.content.replace(currentUser?.username ?? '', 'You')}
+                </ReactMarkdown>
               </Text>
             ) : (
               <>

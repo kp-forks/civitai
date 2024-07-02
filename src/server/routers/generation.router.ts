@@ -27,6 +27,7 @@ import {
 import {
   guardedProcedure,
   isFlagProtected,
+  moderatorProcedure,
   protectedProcedure,
   publicProcedure,
   router,
@@ -61,7 +62,11 @@ export const generationRouter = router({
           e.message.startsWith('Your prompt was flagged')
         ) {
           await reportProhibitedRequestHandler({
-            input: { prompt: input.params.prompt, source: 'External' },
+            input: {
+              prompt: input.params.prompt,
+              negativePrompt: input.params.negativePrompt,
+              source: 'External',
+            },
             ctx,
           });
         }
@@ -94,7 +99,7 @@ export const generationRouter = router({
     .use(edgeCacheIt({ ttl: CacheTTL.sm }))
     .query(() => getUnstableResources()),
   getUnavailableResources: publicProcedure.query(() => getUnavailableResources()),
-  toggleUnavailableResource: protectedProcedure
+  toggleUnavailableResource: moderatorProcedure
     .input(getByIdSchema)
     .mutation(({ input, ctx }) =>
       toggleUnavailableResource({ ...input, isModerator: ctx.user.isModerator })
@@ -116,6 +121,6 @@ export const generationRouter = router({
     }),
   estimateTextToImage: publicProcedure
     .input(generationRequestTestRunSchema)
-    .use(edgeCacheIt({ ttl: CacheTTL.hour }))
+    .use(edgeCacheIt({ ttl: CacheTTL.sm }))
     .query(({ input }) => textToImageTestRun(input)),
 });

@@ -10,12 +10,12 @@ import {
 } from '@prisma/client';
 import { TRPCError } from '@trpc/server';
 import { CommandResourcesAdd, ResourceType } from '~/components/CivitaiLink/shared-types';
-import { BaseModel, BaseModelType, ModelFileType, constants } from '~/server/common/constants';
+import { BaseModel, BaseModelType, constants, ModelFileType } from '~/server/common/constants';
 import { ModelSort, SearchIndexUpdateQueueAction } from '~/server/common/enums';
 import { Context } from '~/server/createContext';
-
 import { dbRead, dbWrite } from '~/server/db/client';
 import { eventEngine } from '~/server/events';
+import { dataForModelsCache } from '~/server/redis/caches';
 import { getInfiniteArticlesSchema } from '~/server/schema/article.schema';
 import { GetAllSchema, GetByIdInput, UserPreferencesInput } from '~/server/schema/base.schema';
 import {
@@ -29,6 +29,7 @@ import {
   DeleteModelSchema,
   FindResourcesToAssociateSchema,
   GetAllModelsOutput,
+  getAllModelsSchema,
   GetAssociatedResourcesInput,
   GetDownloadSchema,
   GetModelVersionsSchema,
@@ -42,7 +43,6 @@ import {
   ToggleModelLockInput,
   UnpublishModelSchema,
   UpdateGallerySettingsInput,
-  getAllModelsSchema,
 } from '~/server/schema/model.schema';
 import { modelsSearchIndex } from '~/server/search-index';
 import {
@@ -50,7 +50,7 @@ import {
   getAllModelsWithVersionsSelect,
   modelWithDetailsSelect,
 } from '~/server/selectors/model.selector';
-import { simpleUserSelect } from '~/server/selectors/user.selector';
+import { userWithCosmeticsSelect } from '~/server/selectors/user.selector';
 import { getArticles } from '~/server/services/article.service';
 import { getFeatureFlags } from '~/server/services/feature-flags.service';
 import { getDownloadFilename, getFilesByEntity } from '~/server/services/file.service';
@@ -58,22 +58,23 @@ import { getImagesForModelVersion } from '~/server/services/image.service';
 import {
   deleteModelById,
   getDraftModelsByUserId,
+  getGallerySettingsByModelId,
   getModel,
-  getModelVersionsMicro,
   getModels,
+  getModelsRaw,
   getModelsWithImagesAndModelVersions,
+  getModelVersionsMicro,
   getTrainingModelsByUserId,
   getVaeFiles,
   permaDeleteModelById,
   publishModelById,
   restoreModelById,
+  toggleCheckpointCoverage,
   toggleLockModel,
   unpublishModelById,
   updateModelById,
   updateModelEarlyAccessDeadline,
   upsertModel,
-  getGallerySettingsByModelId,
-  toggleCheckpointCoverage,
 } from '~/server/services/model.service';
 import { trackModActivity } from '~/server/services/moderator.service';
 import { getCategoryTags } from '~/server/services/system-cache';
@@ -87,20 +88,18 @@ import {
 } from '~/server/utils/errorHandling';
 import { getPrimaryFile } from '~/server/utils/model-helpers';
 import { DEFAULT_PAGE_SIZE, getPagination, getPagingData } from '~/server/utils/pagination-helpers';
-import { getDownloadUrl } from '~/utils/delivery-worker';
-import { isDefined } from '~/utils/type-guards';
-import { redis } from '../redis/client';
-import { modelHashSelect } from './../selectors/modelHash.selector';
-import {
-  deleteResourceDataCache,
-  getUnavailableResources,
-} from '../services/generation/generation.service';
-import { BountyDetailsSchema } from '../schema/bounty.schema';
 import {
   allBrowsingLevelsFlag,
   getIsSafeBrowsingLevel,
 } from '~/shared/constants/browsingLevel.constants';
-import { Flags } from '~/shared/utils';
+import { getDownloadUrl } from '~/utils/delivery-worker';
+import { isDefined } from '~/utils/type-guards';
+import { redis } from '../redis/client';
+import { BountyDetailsSchema } from '../schema/bounty.schema';
+import {
+  deleteResourceDataCache,
+  getUnavailableResources,
+} from '../services/generation/generation.service';
 
 export type GetModelReturnType = AsyncReturnType<typeof getModelHandler>;
 export const getModelHandler = async ({ input, ctx }: { input: GetByIdInput; ctx: Context }) => {
@@ -274,7 +273,7 @@ export const getModelsInfiniteHandler = async ({
     let isPrivate = false;
     let nextCursor: string | bigint | undefined;
     const results: Awaited<ReturnType<typeof getModelsWithImagesAndModelVersions>>['items'] = [];
-    while (results.length <= (input.limit ?? 100) && loopCount < 3) {
+    while (results.length < (input.limit ?? 100) && loopCount < 3) {
       const result = await getModelsWithImagesAndModelVersions({
         input,
         user: ctx.user,
@@ -357,10 +356,13 @@ export const upsertModelHandler = async ({
 }) => {
   try {
     const { id: userId } = ctx.user;
-    const { nsfw, poi } = input;
+    const { nsfw, poi, minor } = input;
 
     if (nsfw && poi)
       throw throwBadRequestError('Mature content depicting actual people is not permitted.');
+
+    if (nsfw && minor)
+      throw throwBadRequestError('Mature content depicting minors is not permitted.');
 
     // Check tags for multiple categories
     const { tagsOnModels } = input;
@@ -378,7 +380,7 @@ export const upsertModelHandler = async ({
         );
     }
 
-    const model = await upsertModel({ ...input, userId });
+    const model = await upsertModel({ ...input, userId, isModerator: ctx.user.isModerator });
     if (!model) throw throwNotFoundError(`No model with id ${input.id}`);
 
     await ctx.track.modelEvent({
@@ -386,6 +388,8 @@ export const upsertModelHandler = async ({
       modelId: model.id,
       nsfw: !getIsSafeBrowsingLevel(model.nsfwLevel),
     });
+
+    if (input.id) await dataForModelsCache.bust(input.id);
 
     return model;
   } catch (error) {
@@ -444,6 +448,8 @@ export const publishModelHandler = async ({
       });
     }
 
+    await dataForModelsCache.bust(input.id);
+
     return updatedModel;
   } catch (error) {
     if (error instanceof TRPCError) throw error;
@@ -475,6 +481,8 @@ export const unpublishModelHandler = async ({
       nsfw: model.nsfw,
     });
 
+    await dataForModelsCache.bust(input.id);
+
     return updatedModel;
   } catch (error) {
     if (error instanceof TRPCError) throw error;
@@ -497,13 +505,13 @@ export const deleteModelHandler = async ({
     const model = await deleteModel({ id, userId: ctx.user.id });
     if (!model) throw throwNotFoundError(`No model with id ${id}`);
 
-    await modelsSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Delete }]);
-
     await ctx.track.modelEvent({
       type: permanently ? 'PermanentDelete' : 'Delete',
       modelId: model.id,
       nsfw: !getIsSafeBrowsingLevel(model.nsfwLevel),
     });
+
+    await dataForModelsCache.bust(id);
 
     return model;
   } catch (error) {
@@ -880,32 +888,70 @@ export const getMyTrainingModelsHandler = async ({
       userId,
       select: {
         id: true,
+        trainingDetails: true,
+        trainingStatus: true,
         name: true,
-        type: true,
         createdAt: true,
-        status: true,
         updatedAt: true,
-        modelVersions: {
+
+        model: {
           select: {
             id: true,
-            trainingDetails: true,
-            trainingStatus: true,
-            files: {
+            name: true,
+            status: true,
+            _count: {
               select: {
-                id: true,
-                url: true,
-                type: true,
-                metadata: true,
-                sizeKB: true,
+                modelVersions: true,
               },
-              where: { type: { equals: 'Training Data' } },
             },
           },
+        },
+
+        files: {
+          select: {
+            id: true,
+            url: true,
+            type: true,
+            metadata: true,
+            sizeKB: true,
+          },
+          where: { type: { equals: 'Training Data' } },
         },
       },
     });
   } catch (error) {
     throw throwDbError(error);
+  }
+};
+
+export const getAvailableTrainingModelsHandler = async ({
+  ctx,
+}: {
+  ctx: DeepNonNullable<Context>;
+}) => {
+  try {
+    return await dbRead.model.findMany({
+      where: {
+        userId: ctx.user.id,
+        uploadType: ModelUploadType.Trained,
+        status: { notIn: [ModelStatus.Deleted] },
+      },
+      select: {
+        id: true,
+        name: true,
+        modelVersions: {
+          select: {
+            id: true,
+            trainingDetails: true,
+            baseModel: true,
+          },
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+  } catch (error) {
+    if (error instanceof TRPCError) throw error;
+    else throw throwDbError(error);
   }
 };
 
@@ -932,6 +978,8 @@ export const reorderModelVersionsHandler = async ({
     ]);
 
     if (!model) throw throwNotFoundError(`No model with id ${input.id}`);
+
+    await dataForModelsCache.bust(input.id);
 
     return model;
   } catch (error) {
@@ -1166,64 +1214,18 @@ export const getAssociatedResourcesCardDataHandler = async ({
       period,
     });
 
-    const [{ items: models }, { items: articles }] = await Promise.all([
+    const { items: models } =
       modelResources?.length > 0
-        ? getModels({
+        ? await getModelsRaw({
             user,
             input: modelInput,
-            select: {
-              id: true,
-              name: true,
-              type: true,
-              status: true,
-              createdAt: true,
-              lastVersionAt: true,
-              publishedAt: true,
-              locked: true,
-              earlyAccessDeadline: true,
-              mode: true,
-              nsfwLevel: true,
-              metrics: {
-                select: {
-                  downloadCount: true,
-                  favoriteCount: true,
-                  commentCount: true,
-                  ratingCount: true,
-                  rating: true,
-                  thumbsUpCount: true,
-                  thumbsDownCount: true,
-                },
-                where: { timeframe: period },
-              },
-              modelVersions: {
-                orderBy: { index: 'asc' },
-                take: 1,
-                where: { status: ModelStatus.Published },
-                select: {
-                  id: true,
-                  earlyAccessTimeFrame: true,
-                  createdAt: true,
-                  baseModel: true,
-                  baseModelType: true,
-                  generationCoverage: { select: { covered: true } },
-                },
-              },
-              user: { select: simpleUserSelect },
-              hashes: {
-                select: modelHashSelect,
-                where: {
-                  hashType: ModelHashType.SHA256,
-                  fileType: { in: ['Model', 'Pruned Model'] as ModelFileType[] },
-                },
-              },
-            },
           })
-        : { items: [] },
+        : { items: [] };
+
+    const { items: articles } =
       articleResources?.length > 0
-        ? getArticles({ ...articleInput, sessionUser: user })
-        : { items: [] },
-      ,
-    ]);
+        ? await getArticles({ ...articleInput, sessionUser: user })
+        : { items: [] };
 
     const modelVersionIds = models.flatMap((m) => m.modelVersions).map((m) => m.id);
     const images = !!modelVersionIds.length
@@ -1238,8 +1240,9 @@ export const getAssociatedResourcesCardDataHandler = async ({
         })
       : [];
 
+    const unavailableGenResources = await getUnavailableResources();
     const completeModels = models
-      .map(({ hashes, modelVersions, metrics, ...model }) => {
+      .map(({ hashes, modelVersions, rank, ...model }) => {
         const [version] = modelVersions;
         if (!version) return null;
         const versionImages = images.filter((i) => i.modelVersionId === version.id);
@@ -1247,19 +1250,20 @@ export const getAssociatedResourcesCardDataHandler = async ({
           (user?.isModerator || model.user.id === user?.id) &&
           (modelInput.user || modelInput.username);
         if (!versionImages.length && !showImageless) return null;
-        const canGenerate = !!version.generationCoverage?.covered;
+        const canGenerate = !!version.covered && !unavailableGenResources.includes(version.id);
 
         return {
           ...model,
-          hashes: hashes.map((hash) => hash.hash.toLowerCase()),
+          hashes: hashes.map((h) => h.toLowerCase()),
           rank: {
-            downloadCount: metrics[0]?.downloadCount ?? 0,
-            favoriteCount: metrics[0]?.favoriteCount ?? 0,
-            thumbsUpCount: metrics[0]?.thumbsUpCount ?? 0,
-            thumbsDownCount: metrics[0]?.thumbsDownCount ?? 0,
-            commentCount: metrics[0]?.commentCount ?? 0,
-            ratingCount: metrics[0]?.ratingCount ?? 0,
-            rating: metrics[0]?.rating ?? 0,
+            downloadCount: rank?.downloadCountAllTime ?? 0,
+            thumbsUpCount: rank?.thumbsUpCountAllTime ?? 0,
+            thumbsDownCount: rank?.thumbsDownCountAllTime ?? 0,
+            commentCount: rank?.commentCountAllTime ?? 0,
+            ratingCount: rank?.ratingCountAllTime ?? 0,
+            collectedCount: rank?.collectedCountAllTime ?? 0,
+            tippedAmountCount: rank?.tippedAmountCountAllTime ?? 0,
+            rating: rank.ratingAllTime ?? 0,
           },
           images: model.mode !== ModelModifier.TakenDown ? (versionImages as typeof images) : [],
           canGenerate,
@@ -1298,16 +1302,15 @@ export const getModelByHashesHandler = async ({ input }: { input: ModelByHashesI
   const modelsByHashes = await dbRead.$queryRaw<
     { userId: number; modelId: number; hash: string }[]
   >`
-      SELECT
-        m."userId",
-        m."id",
-        mfh."hash"
-      FROM "ModelFileHash" mfh
-      JOIN "ModelFile" mf ON mf."id" = mfh."fileId"
-      JOIN "ModelVersion" mv ON mv."id" = mf."modelVersionId"
-      JOIN "Model" m ON mv."modelId" = m.id
-      WHERE LOWER(mfh."hash") IN (${Prisma.join(hashes.map((h) => h.toLowerCase()))});
-    `;
+    SELECT m."userId",
+           m."id",
+           mfh."hash"
+    FROM "ModelFileHash" mfh
+           JOIN "ModelFile" mf ON mf."id" = mfh."fileId"
+           JOIN "ModelVersion" mv ON mv."id" = mf."modelVersionId"
+           JOIN "Model" m ON mv."modelId" = m.id
+    WHERE LOWER(mfh."hash") IN (${Prisma.join(hashes.map((h) => h.toLowerCase()))});
+  `;
 
   return modelsByHashes;
 };
@@ -1493,6 +1496,7 @@ export const updateGallerySettingsHandler = async ({
           users: gallerySettings.hiddenUsers.map(({ id }) => id),
           tags: gallerySettings.hiddenTags.map(({ id }) => id),
           level: gallerySettings.level,
+          pinnedPosts: gallerySettings.pinnedPosts,
         }
       : null;
     const updatedModel = await updateModelById({
@@ -1520,9 +1524,16 @@ export async function toggleCheckpointCoverageHandler({
     await modelsSearchIndex.queueUpdate([
       { id: input.id, action: SearchIndexUpdateQueueAction.Update },
     ]);
+    await dataForModelsCache.bust(input.id);
 
     return affectedVersionIds;
   } catch (error) {
     throw throwDbError(error);
   }
+}
+
+export async function getModelOwnerHandler({ input }: { input: GetByIdInput }) {
+  const model = await getModel({ ...input, select: { user: { select: userWithCosmeticsSelect } } });
+  if (!model) throw throwNotFoundError();
+  return model.user;
 }

@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   Center,
+  createStyles,
   Group,
   Loader,
   MantineTheme,
@@ -16,40 +17,49 @@ import {
   ThemeIcon,
   Tooltip,
 } from '@mantine/core';
+import { useLocalStorage } from '@mantine/hooks';
 import { NextLink } from '@mantine/next';
 import { CollectionType, ModelFileVisibility, ModelModifier, ModelStatus } from '@prisma/client';
 import {
-  IconClock,
-  IconDownload,
   IconBrush,
-  IconExclamationMark,
-  IconLicense,
-  IconMessageCircle2,
-  IconShare3,
+  IconClock,
   IconCloudCheck,
   IconCloudLock,
+  IconDownload,
+  IconExclamationMark,
   IconHeart,
-  IconPhotoPlus,
+  IconLicense,
   IconLock,
+  IconMessageCircle2,
+  IconPhotoPlus,
+  IconShare3,
 } from '@tabler/icons-react';
 import { TRPCClientErrorBase } from '@trpc/client';
 import { DefaultErrorShape } from '@trpc/server';
 import dayjs from 'dayjs';
 import { startCase } from 'lodash-es';
 import { SessionUser } from 'next-auth';
+import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useRef, useState } from 'react';
-
+import { adsRegistry } from '~/components/Ads/adsRegistry';
+import { Adunit } from '~/components/Ads/AdUnit';
 import { AlertWithIcon } from '~/components/AlertWithIcon/AlertWithIcon';
-import { useCivitaiLink } from '~/components/CivitaiLink/CivitaiLinkProvider';
 import { CivitaiLinkManageButton } from '~/components/CivitaiLink/CivitaiLinkManageButton';
+import { useCivitaiLink } from '~/components/CivitaiLink/CivitaiLinkProvider';
+import { ContainerGrid } from '~/components/ContainerGrid/ContainerGrid';
 import { ContentClamp } from '~/components/ContentClamp/ContentClamp';
-import { CreatorCard } from '~/components/CreatorCard/CreatorCard';
+import { SmartCreatorCard } from '~/components/CreatorCard/CreatorCard';
 import {
   DescriptionTable,
   type Props as DescriptionTableProps,
 } from '~/components/DescriptionTable/DescriptionTable';
+import { useDialogContext } from '~/components/Dialog/DialogProvider';
+import { dialogStore } from '~/components/Dialog/dialogStore';
+import { RoutedDialogLink } from '~/components/Dialog/RoutedDialogProvider';
 import { FileInfo } from '~/components/FileInfo/FileInfo';
+import { IconBadge } from '~/components/IconBadge/IconBadge';
+import { LoginRedirect } from '~/components/LoginRedirect/LoginRedirect';
 import { EarlyAccessAlert } from '~/components/Model/EarlyAccessAlert/EarlyAccessAlert';
 import { HowToButton, HowToUseModel } from '~/components/Model/HowToUseModel/HowToUseModel';
 import { ModelCarousel } from '~/components/Model/ModelCarousel/ModelCarousel';
@@ -57,15 +67,28 @@ import { ModelFileAlert } from '~/components/Model/ModelFileAlert/ModelFileAlert
 import { ModelHash } from '~/components/Model/ModelHash/ModelHash';
 import { ModelURN, URNExplanation } from '~/components/Model/ModelURN/ModelURN';
 import { DownloadButton } from '~/components/Model/ModelVersions/DownloadButton';
+import { useQueryModelVersionsEngagement } from '~/components/Model/ModelVersions/model-version.utils';
+import { ModelVersionReview } from '~/components/Model/ModelVersions/ModelVersionReview';
 import { ScheduleModal } from '~/components/Model/ScheduleModal/ScheduleModal';
 import { PermissionIndicator } from '~/components/PermissionIndicator/PermissionIndicator';
+import { PoiAlert } from '~/components/PoiAlert/PoiAlert';
 import { RenderHtml } from '~/components/RenderHtml/RenderHtml';
+import {
+  EditUserResourceReviewLight,
+  UserResourceReviewComposite,
+} from '~/components/ResourceReview/EditUserResourceReview';
+import { useQueryUserResourceReview } from '~/components/ResourceReview/resourceReview.utils';
+import { ResourceReviewThumbActions } from '~/components/ResourceReview/ResourceReviewThumbActions';
 import { GenerateButton } from '~/components/RunStrategy/GenerateButton';
 import { RunButton } from '~/components/RunStrategy/RunButton';
 import { ShareButton } from '~/components/ShareButton/ShareButton';
+import { IconCivitai } from '~/components/SVG/IconCivitai';
+import { ThumbsDownIcon, ThumbsUpIcon } from '~/components/ThumbsIcon/ThumbsIcon';
 import { TrackView } from '~/components/TrackView/TrackView';
 import { TrainedWords } from '~/components/TrainedWords/TrainedWords';
+import { ToggleVaultButton } from '~/components/Vault/ToggleVaultButton';
 import { VerifiedText } from '~/components/VerifiedText/VerifiedText';
+import { openContext } from '~/providers/CustomModalsProvider';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import {
   baseModelLicenses,
@@ -78,34 +101,23 @@ import { unpublishReasons } from '~/server/common/moderation-helpers';
 import { getFileDisplayName, getPrimaryFile } from '~/server/utils/model-helpers';
 import { ModelById } from '~/types/router';
 import { formatDate, formatDateMin } from '~/utils/date-helpers';
+import { containerQuery } from '~/utils/mantine-css-helpers';
 import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
 import { formatKBytes } from '~/utils/number-helpers';
 import { getDisplayName, removeTags } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
-import { PoiAlert } from '~/components/PoiAlert/PoiAlert';
-import Link from 'next/link';
-import { RoutedDialogLink } from '~/components/Dialog/RoutedDialogProvider';
-import { IconCivitai } from '~/components/SVG/IconCivitai';
-import { containerQuery } from '~/utils/mantine-css-helpers';
-import { useDialogContext } from '~/components/Dialog/DialogProvider';
-import { dialogStore } from '~/components/Dialog/dialogStore';
-import { ContainerGrid } from '~/components/ContainerGrid/ContainerGrid';
-import { IconBadge } from '~/components/IconBadge/IconBadge';
-import { Adunit } from '~/components/Ads/AdUnit';
-import { adsRegistry } from '~/components/Ads/adsRegistry';
-import { useLocalStorage } from '@mantine/hooks';
-import { ToggleVaultButton } from '~/components/Vault/ToggleVaultButton';
-import { LoginRedirect } from '~/components/LoginRedirect/LoginRedirect';
-import { useQueryUserResourceReview } from '~/components/ResourceReview/resourceReview.utils';
-import { ModelVersionReview } from '~/components/Model/ModelVersions/ModelVersionReview';
-import { useQueryModelVersionsEngagement } from '~/components/Model/ModelVersions/model-version.utils';
-import {
-  EditUserResourceReviewLight,
-  UserResourceReviewComposite,
-} from '~/components/ResourceReview/EditUserResourceReview';
-import { ResourceReviewThumbActions } from '~/components/ResourceReview/ResourceReviewThumbActions';
-import { ThumbsDownIcon, ThumbsUpIcon } from '~/components/ThumbsIcon/ThumbsIcon';
-import { openContext } from '~/providers/CustomModalsProvider';
+
+const useStyles = createStyles(() => ({
+  ctaContainer: {
+    width: '100%',
+    flexWrap: 'wrap',
+    ['> *']: { flexGrow: 1 },
+
+    [containerQuery.largerThan('sm')]: {
+      ['> *']: { flexGrow: 0 },
+    },
+  },
+}));
 
 export function ModelVersionDetails({
   model,
@@ -115,6 +127,7 @@ export function ModelVersionDetails({
   onFavoriteClick,
   hasAccess = true,
 }: Props) {
+  const { classes } = useStyles();
   const { connected: civitaiLinked } = useCivitaiLink();
   const router = useRouter();
   const queryUtils = trpc.useUtils();
@@ -126,6 +139,8 @@ export function ModelVersionDetails({
     key: 'model-version-details-accordions',
     defaultValue: ['version-details'],
   });
+  const isOwner = model.user?.id === user?.id;
+  const isOwnerOrMod = isOwner || user?.isModerator;
 
   const primaryFile = getPrimaryFile(version.files, {
     metadata: user?.filePreferences,
@@ -135,7 +150,7 @@ export function ModelVersionDetails({
   const filesCount = version.files?.length;
   const hasFiles = filesCount > 0;
   const filesVisible = version.files?.filter(
-    (f) => f.visibility === ModelFileVisibility.Public || model.user.id === user?.id
+    (f) => f.visibility === ModelFileVisibility.Public || isOwnerOrMod
   );
   const filesVisibleCount = filesVisible.length;
   const hasVisibleFiles = filesVisibleCount > 0;
@@ -265,7 +280,9 @@ export function ModelVersionDetails({
         />
       ),
     },
-    { label: 'Uploaded', value: formatDate(version.createdAt) },
+    version.status === 'Published' && version.publishedAt
+      ? { label: 'Published', value: formatDate(version.publishedAt) }
+      : { label: 'Uploaded', value: formatDate(version.createdAt) },
     {
       label: 'Base Model',
       value:
@@ -402,7 +419,7 @@ export function ModelVersionDetails({
   );
   const primaryFileDetails = primaryFile && getFileDetails(primaryFile);
 
-  const downloadMenuItems = version.files?.map((file) =>
+  const downloadMenuItems = filesVisible.map((file) =>
     !archived && hasAccess ? (
       <Menu.Item
         key={file.id}
@@ -477,8 +494,6 @@ export function ModelVersionDetails({
 
   const cleanDescription = version.description ? removeTags(version.description) : '';
 
-  const isOwner = model.user?.id === user?.id;
-  const isOwnerOrMod = isOwner || user?.isModerator;
   const hasPosts = !!version.posts?.length;
   const showPublishButton =
     isOwnerOrMod &&
@@ -513,9 +528,9 @@ export function ModelVersionDetails({
       model.allowDifferentLicense);
 
   return (
-    <ContainerGrid gutter="xl" gutterSm="sm">
+    <ContainerGrid gutter="xl" gutterSm="sm" gutterMd="xl">
       <TrackView entityId={version.id} entityType="ModelVersion" type="ModelVersionView" />
-      <ContainerGrid.Col xs={12} sm={5} orderSm={2}>
+      <ContainerGrid.Col xs={12} sm={5} md={4} orderSm={2}>
         <Stack>
           {model.mode !== ModelModifier.TakenDown && (
             <ModelCarousel
@@ -571,13 +586,17 @@ export function ModelVersionDetails({
             </Stack>
           ) : (
             <Stack spacing={4}>
-              <Group spacing="xs" style={{ alignItems: 'flex-start', flexWrap: 'nowrap' }}>
-                {canGenerate && (
-                  <GenerateButton modelVersionId={version.id} data-activity="create:model" />
-                )}
+              <Group spacing="xs" className={classes.ctaContainer}>
+                <Group spacing="xs" sx={{ flex: 1, ['> *']: { flexGrow: 1 } }} noWrap>
+                  {canGenerate && (
+                    <GenerateButton
+                      modelVersionId={version.id}
+                      data-activity="create:model"
+                      sx={{ flex: '2 !important', paddingLeft: 8, paddingRight: 12 }}
+                    />
+                  )}
 
-                {displayCivitaiLink && (
-                  <Stack sx={canGenerate ? undefined : { flex: 1 }} spacing={4}>
+                  {displayCivitaiLink && (
                     <CivitaiLinkManageButton
                       modelId={model.id}
                       modelVersionId={version.id}
@@ -594,6 +613,8 @@ export function ModelVersionDetails({
                             onClick={onClick}
                             leftIcon={icon}
                             disabled={!primaryFile}
+                            sx={{ flex: '2 !important', paddingLeft: 8, paddingRight: 12 }}
+                            fullWidth
                           >
                             {label}
                           </Button>
@@ -605,12 +626,8 @@ export function ModelVersionDetails({
                               onClick={onClick}
                               disabled={!primaryFile}
                               variant="light"
-                              sx={{
-                                cursor: 'pointer',
-                                paddingLeft: 0,
-                                paddingRight: 0,
-                                width: '36px',
-                              }}
+                              sx={{ flex: 1, paddingLeft: 8, paddingRight: 8 }}
+                              fullWidth
                             >
                               {icon}
                             </Button>
@@ -618,104 +635,101 @@ export function ModelVersionDetails({
                         )
                       }
                     </CivitaiLinkManageButton>
-                  </Stack>
-                )}
+                  )}
 
-                {displayCivitaiLink || canGenerate ? (
-                  filesCount === 1 ? (
+                  {displayCivitaiLink || canGenerate ? (
+                    filesCount === 1 ? (
+                      <DownloadButton
+                        canDownload={version.canDownload}
+                        component="a"
+                        href={createModelFileDownloadUrl({
+                          versionId: version.id,
+                          primary: true,
+                        })}
+                        tooltip="Download"
+                        disabled={!primaryFile || archived}
+                        sx={{ flex: 1, paddingLeft: 8, paddingRight: 8 }}
+                        iconOnly
+                      />
+                    ) : (
+                      <Menu position="bottom-end">
+                        <Menu.Target>
+                          <DownloadButton
+                            canDownload={version.canDownload}
+                            disabled={!primaryFile || archived}
+                            sx={{ flex: 1, paddingLeft: 8, paddingRight: 8 }}
+                            iconOnly
+                          />
+                        </Menu.Target>
+                        <Menu.Dropdown>{downloadMenuItems}</Menu.Dropdown>
+                      </Menu>
+                    )
+                  ) : (
                     <DownloadButton
-                      canDownload={version.canDownload}
                       component="a"
                       href={createModelFileDownloadUrl({
                         versionId: version.id,
                         primary: true,
                       })}
-                      tooltip="Download"
+                      canDownload={version.canDownload}
                       disabled={!primaryFile || archived}
-                      iconOnly
-                    />
-                  ) : (
-                    <Menu position="bottom-end">
-                      <Menu.Target>
-                        <DownloadButton
-                          canDownload={version.canDownload}
-                          disabled={!primaryFile || archived}
-                          iconOnly
-                        />
-                      </Menu.Target>
-                      <Menu.Dropdown>{downloadMenuItems}</Menu.Dropdown>
-                    </Menu>
-                  )
-                ) : (
-                  <DownloadButton
-                    component="a"
-                    href={createModelFileDownloadUrl({
-                      versionId: version.id,
-                      primary: true,
-                    })}
-                    canDownload={version.canDownload}
-                    disabled={!primaryFile || archived}
-                    sx={{ flex: 1 }}
-                  >
-                    <Text align="center">
-                      {primaryFile ? (
-                        <>
-                          Download{' '}
-                          <Text className="inline sm:max-md:hidden" span>{`(${formatKBytes(
-                            primaryFile?.sizeKB
-                          )})`}</Text>
-                        </>
-                      ) : (
-                        'No file'
-                      )}
-                    </Text>
-                  </DownloadButton>
-                )}
-                {!displayCivitaiLink && <RunButton variant="light" modelVersionId={version.id} />}
-                <Tooltip label="Share" position="top" withArrow>
-                  <div>
-                    <ShareButton
-                      url={router.asPath}
-                      title={model.name}
-                      collect={{ modelId: model.id, type: CollectionType.Model }}
+                      sx={{ flex: '2 !important', paddingLeft: 8, paddingRight: 12 }}
                     >
-                      <Button
-                        sx={{ cursor: 'pointer', paddingLeft: 0, paddingRight: 0, width: '36px' }}
-                        color="gray"
-                      >
-                        <IconShare3 />
-                      </Button>
-                    </ShareButton>
-                  </div>
-                </Tooltip>
-
-                {onFavoriteClick && (
-                  <Tooltip label={isFavorite ? 'Unlike' : 'Like'} position="top" withArrow>
+                      <Text align="center">
+                        {primaryFile ? (
+                          <>
+                            Download <Text span>{`(${formatKBytes(primaryFile?.sizeKB)})`}</Text>
+                          </>
+                        ) : (
+                          'No file'
+                        )}
+                      </Text>
+                    </DownloadButton>
+                  )}
+                </Group>
+                <Group spacing="xs" sx={{ flex: 1, ['> *']: { flexGrow: 1 } }} noWrap>
+                  {!displayCivitaiLink && <RunButton variant="light" modelVersionId={version.id} />}
+                  <Tooltip label="Share" position="top" withArrow>
                     <div>
-                      <LoginRedirect reason="favorite-model">
-                        <Button
-                          onClick={() =>
-                            onFavoriteClick({ versionId: version.id, setTo: !isFavorite })
-                          }
-                          color={isFavorite ? 'green' : 'gray'}
-                          sx={{ cursor: 'pointer', paddingLeft: 0, paddingRight: 0, width: '36px' }}
-                        >
-                          <ThumbsUpIcon color="#fff" filled={isFavorite} />
+                      <ShareButton
+                        url={router.asPath}
+                        title={model.name}
+                        collect={{ modelId: model.id, type: CollectionType.Model }}
+                      >
+                        <Button sx={{ paddingLeft: 8, paddingRight: 8 }} color="gray" fullWidth>
+                          <IconShare3 size={24} />
                         </Button>
-                      </LoginRedirect>
+                      </ShareButton>
                     </div>
                   </Tooltip>
-                )}
-                <ToggleVaultButton modelVersionId={version.id}>
-                  {({ isLoading, isInVault, toggleVaultItem }) => (
-                    <Tooltip
-                      label={isInVault ? 'Remove from Vault' : 'Add To Vault'}
-                      position="top"
-                      withArrow
-                    >
+
+                  {onFavoriteClick && (
+                    <Tooltip label={isFavorite ? 'Unlike' : 'Like'} position="top" withArrow>
                       <div>
+                        <LoginRedirect reason="favorite-model">
+                          <Button
+                            onClick={() =>
+                              onFavoriteClick({ versionId: version.id, setTo: !isFavorite })
+                            }
+                            color={isFavorite ? 'green' : 'gray'}
+                            sx={{ paddingLeft: 8, paddingRight: 8 }}
+                            fullWidth
+                          >
+                            <ThumbsUpIcon color="#fff" filled={isFavorite} size={24} />
+                          </Button>
+                        </LoginRedirect>
+                      </div>
+                    </Tooltip>
+                  )}
+                  <ToggleVaultButton modelVersionId={version.id}>
+                    {({ isLoading, isInVault, toggleVaultItem }) => (
+                      <Tooltip
+                        label={isInVault ? 'Remove from Vault' : 'Add To Vault'}
+                        position="top"
+                        withArrow
+                      >
                         <Button
-                          sx={{ cursor: 'pointer', paddingLeft: 0, paddingRight: 0, width: '36px' }}
+                          sx={{ paddingLeft: 8, paddingRight: 8 }}
                           color={isInVault ? 'green' : 'gray'}
                           onClick={toggleVaultItem}
                           disabled={isLoading}
@@ -724,15 +738,15 @@ export function ModelVersionDetails({
                           {isLoading ? (
                             <Loader size="xs" />
                           ) : isInVault ? (
-                            <IconCloudCheck />
+                            <IconCloudCheck size={24} />
                           ) : (
-                            <IconCloudLock />
+                            <IconCloudLock size={24} />
                           )}
                         </Button>
-                      </div>
-                    </Tooltip>
-                  )}
-                </ToggleVaultButton>
+                      </Tooltip>
+                    )}
+                  </ToggleVaultButton>
+                </Group>
               </Group>
               {primaryFileDetails}
             </Stack>
@@ -1026,7 +1040,11 @@ export function ModelVersionDetails({
             )}
           </Accordion>
 
-          <CreatorCard user={model.user} tipBuzzEntityType="Model" tipBuzzEntityId={model.id} />
+          <SmartCreatorCard
+            user={model.user}
+            tipBuzzEntityType="Model"
+            tipBuzzEntityId={model.id}
+          />
           {onSite && (
             <Group
               align="flex-start"
@@ -1125,6 +1143,7 @@ export function ModelVersionDetails({
       <ContainerGrid.Col
         xs={12}
         sm={7}
+        md={8}
         orderSm={1}
         sx={(theme: MantineTheme) => ({
           [containerQuery.largerThan('xs')]: {

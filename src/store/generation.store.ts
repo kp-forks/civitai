@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
+import { generation } from '~/server/common/constants';
 import { GetGenerationDataInput } from '~/server/schema/generation.schema';
 import { Generation } from '~/server/services/generation/generation.types';
 import { showErrorNotification } from '~/utils/notifications';
@@ -36,11 +37,11 @@ export const useGenerationStore = create<GenerationState>()(
         if (!input) return;
         const data = await getGenerationData(input);
         const type =
-          input.type === 'model' || input.type === 'modelVersion'
+          input.type === 'model' || input.type === 'modelVersion' || input.type === 'modelVersions'
             ? 'run'
             : input.type === 'image'
-            ? 'remix'
-            : 'random';
+              ? 'remix'
+              : 'random';
         if (data) get().setData({ type, data: { ...data } });
       },
       close: () =>
@@ -62,6 +63,11 @@ export const useGenerationStore = create<GenerationState>()(
       setData: ({ data, type }) =>
         set((state) => {
           state.view = 'generate';
+          if (
+            data.params?.sampler &&
+            !(generation.samplers as string[]).includes(data.params.sampler)
+          )
+            data.params.sampler = generation.defaultValues.sampler;
           state.data = { type, data };
         }),
       randomize: async (includeResources) => {
@@ -94,7 +100,7 @@ export const generationStore = {
 const dictionary: Record<string, Generation.Data> = {};
 const getGenerationData = async (input: GetGenerationDataInput) => {
   try {
-    const key = input.type !== 'random' ? `${input.type}_${input.id}` : undefined;
+    const key = input.type !== 'random' ? `${input.type}_${input.type === 'modelVersions' ? input.ids.join('_') : input.id}` : undefined;
     if (key && dictionary[key]) return dictionary[key];
     else {
       const response = await fetch(`/api/generation/data?${QS.stringify(input)}`);

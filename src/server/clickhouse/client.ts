@@ -39,6 +39,7 @@ function getClickHouse() {
     clickhouse_settings: {
       async_insert: 1,
       wait_for_async_insert: 0,
+      output_format_json_quote_64bit_integers: 0, // otherwise they come as strings
     },
   }) as CustomClickHouseClient;
 
@@ -56,7 +57,7 @@ function getClickHouse() {
       query,
       format: 'JSONEachRow',
     });
-    const data = (await response?.json()) as T[];
+    const data = await response?.json<T>();
     return data;
   };
 
@@ -115,7 +116,9 @@ export type UserActivityType =
   | 'Unbanned'
   | 'Muted'
   | 'Unmuted'
-  | 'RemoveContent';
+  | 'RemoveContent'
+  | 'ExcludedFromLeaderboard'
+  | 'UnexcludedFromLeaderboard';
 export type ModelVersionActivty = 'Create' | 'Publish' | 'Download' | 'Unpublish';
 export type ModelActivty =
   | 'Create'
@@ -155,8 +158,14 @@ export type CommentType =
   | 'Bounty'
   | 'BountyEntry';
 export type CommentActivity = 'Create' | 'Delete' | 'Update' | 'Hide' | 'Unhide';
-export type PostActivityType = 'Create' | 'Publish' | 'Tags';
-export type ImageActivityType = 'Create' | 'Delete' | 'DeleteTOS' | 'Tags' | 'Resources';
+export type PostActivityType = 'Create' | 'Publish' | 'Tags' | 'Delete';
+export type ImageActivityType =
+  | 'Create'
+  | 'Delete'
+  | 'DeleteTOS'
+  | 'Tags'
+  | 'Resources'
+  | 'Restore';
 export type QuestionType = 'Create' | 'Delete';
 export type AnswerType = 'Create' | 'Delete';
 export type PartnerActivity = 'Run' | 'Update';
@@ -300,6 +309,7 @@ export class Tracker {
   public reaction(values: {
     type: ReactionType;
     entityId: number;
+    ownerId: number;
     reaction: ReviewReactions;
     nsfw: NsfwLevelDeprecated;
   }) {
@@ -337,6 +347,8 @@ export class Tracker {
     tags: string[];
     ownerId: number;
     tosReason?: string;
+    resources?: number[];
+    userId?: number;
   }) {
     return this.track('images', values);
   }
@@ -388,7 +400,11 @@ export class Tracker {
     return this.track('bountyEngagements', values);
   }
 
-  public prohibitedRequest(values: { prompt: string; source?: ProhibitedSources }) {
+  public prohibitedRequest(values: {
+    prompt: string;
+    negativePrompt: string;
+    source?: ProhibitedSources;
+  }) {
     return this.track('prohibitedRequests', values);
   }
 

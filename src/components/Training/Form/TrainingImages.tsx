@@ -1,31 +1,25 @@
 import {
-  Accordion,
   ActionIcon,
   Anchor,
-  Badge,
   Button,
+  Card,
   Center,
   Checkbox,
-  Chip,
   createStyles,
   Group,
   Image as MImage,
   Loader,
-  Menu,
   Pagination,
   Paper,
   Progress,
   SimpleGrid,
   Stack,
   Text,
-  Textarea,
-  TextInput,
   Title,
   Tooltip,
   useMantineTheme,
 } from '@mantine/core';
 import { FileWithPath } from '@mantine/dropzone';
-import { useDebouncedValue } from '@mantine/hooks';
 import { openConfirmModal } from '@mantine/modals';
 import { NextLink } from '@mantine/next';
 import { showNotification, updateNotification } from '@mantine/notifications';
@@ -33,23 +27,25 @@ import { ModelFileVisibility } from '@prisma/client';
 import {
   IconAlertTriangle,
   IconCheck,
-  IconChevronDown,
   IconFileDownload,
-  IconReplace,
-  IconSearch,
   IconTags,
+  IconTagsOff,
   IconTrash,
   IconX,
 } from '@tabler/icons-react';
 import { saveAs } from 'file-saver';
 import JSZip from 'jszip';
 import { isEqual } from 'lodash-es';
-import React, { useEffect, useState } from 'react';
+import dynamic from 'next/dynamic';
+import React, { useEffect, useRef, useState } from 'react';
 import { dialogStore } from '~/components/Dialog/dialogStore';
 import { ImageDropzone } from '~/components/Image/ImageDropzone/ImageDropzone';
 import { useSignalContext } from '~/components/Signals/SignalsProvider';
 import { goBack, goNext } from '~/components/Training/Form/TrainingCommon';
-import { TrainingEditTagsModal } from '~/components/Training/Form/TrainingEditTagsModal';
+import {
+  TrainingImagesCaptions,
+  TrainingImagesCaptionViewer,
+} from '~/components/Training/Form/TrainingImagesCaptionViewer';
 import { UploadType } from '~/server/common/enums';
 import { IMAGE_MIME_TYPE, ZIP_MIME_TYPE } from '~/server/common/mime-types';
 import { createModelFileDownloadUrl } from '~/server/common/model-helpers';
@@ -62,19 +58,29 @@ import {
   useTrainingImageStore,
 } from '~/store/training.store';
 import { TrainingModelData } from '~/types/router';
-import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
+import {
+  showErrorNotification,
+  showSuccessNotification,
+  showWarningNotification,
+} from '~/utils/notifications';
 import { bytesToKB } from '~/utils/number-helpers';
 import { trpc } from '~/utils/trpc';
 import { isDefined } from '~/utils/type-guards';
-import { AutoTagModal } from './TrainingAutoTagModal';
+import { createImageElement, resizeImage } from '~/utils/image-utils'
+
+const AutoTagModal = dynamic(() => import('./TrainingAutoTagModal').then((m) => m.AutoTagModal));
 
 const MAX_FILES_ALLOWED = 1000;
 
-const useStyles = createStyles(() => ({
+export const blankTagStr = '@@none@@';
+
+const useStyles = createStyles((theme) => ({
   imgOverlay: {
+    borderBottom: `1px solid ${theme.colorScheme === 'dark' ? theme.colors.dark[5] : theme.colors.gray[2]
+      }`,
     position: 'relative',
     '&:hover .trashIcon': {
-      display: 'initial',
+      display: 'flex',
     },
   },
   trash: {
@@ -95,16 +101,10 @@ const imageExts: { [key: string]: string } = {
   webp: 'image/webp',
 };
 
-const maxWidth = 1024;
-const maxHeight = 1024;
-
-const createImage = (url: string): Promise<HTMLImageElement> =>
-  new Promise((resolve, reject) => {
-    const image = new Image();
-    image.addEventListener('load', () => resolve(image));
-    image.addEventListener('error', (error) => reject(error));
-    image.src = url;
-  });
+const minWidth = 256;
+const minHeight = 256;
+const maxWidth = 2048;
+const maxHeight = 2048;
 
 export const getCaptionAsList = (capt: string) => {
   return capt
@@ -139,10 +139,9 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
   const [zipping, setZipping] = useState<boolean>(false);
   const [loadingZip, setLoadingZip] = useState<boolean>(false);
   const [modelFileId, setModelFileId] = useState<number | undefined>(undefined);
-  const [tagSearchInput, setTagSearchInput] = useState<string>('');
-  const [tagList, setTagList] = useState<[string, number][]>([]);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [debouncedImageList] = useDebouncedValue(imageList, 300);
+  const showImgResizeDown = useRef<number>(0);
+  const showImgResizeUp = useRef<number>(0);
 
   const theme = useMantineTheme();
   const { classes, cx } = useStyles();
@@ -216,19 +215,39 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
 
   const getResizedImgUrl = async (data: FileWithPath | Blob, type: string): Promise<string> => {
     const imgUrl = URL.createObjectURL(data);
-    const img = await createImage(imgUrl);
+    const img = await createImageElement(imgUrl);
     let { width, height } = img;
-    if (width <= maxWidth && height <= maxHeight) return imgUrl;
 
-    if (width > height) {
-      if (width > maxWidth) {
-        height = height * (maxWidth / width);
-        width = maxWidth;
+    // both w and h must be less than the max
+    const goodMax = width <= maxWidth && height <= maxHeight;
+    // one of h and w must be more than the min
+    const goodMin = width >= minWidth || height >= minHeight;
+
+    if (goodMax && goodMin) return imgUrl;
+
+    if (!goodMax) {
+      if (width > height) {
+        if (width > maxWidth) {
+          height = height * (maxWidth / width);
+          width = maxWidth;
+          showImgResizeDown.current += 1;
+        }
+      } else {
+        if (height > maxHeight) {
+          width = width * (maxHeight / height);
+          height = maxHeight;
+          showImgResizeDown.current += 1;
+        }
       }
-    } else {
-      if (height > maxHeight) {
-        width = width * (maxHeight / height);
-        height = maxHeight;
+    } else if (!goodMin) {
+      if (width > height) {
+        height = height * (minWidth / width);
+        width = minWidth;
+        showImgResizeUp.current += 1;
+      } else {
+        width = width * (minHeight / height);
+        height = minHeight;
+        showImgResizeUp.current += 1;
       }
     }
 
@@ -248,6 +267,27 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
     });
   };
 
+  const showResizeWarnings = () => {
+    if (showImgResizeDown.current) {
+      showWarningNotification({
+        title: `${showImgResizeDown.current} image${showImgResizeDown.current === 1 ? '' : 's'
+          } resized down`,
+        message: `Max image dimensions are ${maxWidth}w and ${maxHeight}h.`,
+        autoClose: false,
+      });
+      showImgResizeDown.current = 0;
+    }
+    if (showImgResizeUp.current) {
+      showWarningNotification({
+        title: `${showImgResizeUp.current} image${showImgResizeUp.current === 1 ? '' : 's'
+          } resized up`,
+        message: `Min image dimensions are ${minWidth}w or ${minHeight}h.`,
+        autoClose: false,
+      });
+      showImgResizeUp.current = 0;
+    }
+  };
+
   const handleZip = async (f: FileWithPath, showNotif = true) => {
     if (showNotif) setLoadingZip(true);
     const parsedFiles: ImageDataType[] = [];
@@ -255,6 +295,8 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
     const zData = await zipReader.loadAsync(f);
     await Promise.all(
       Object.entries(zData.files).map(async ([zname, zf]) => {
+        if (zf.dir) return;
+        if (zname.startsWith('__MACOSX/') || zname.endsWith('.DS_STORE')) return;
         // - we could read the type here with some crazy blob/hex inspecting
         const fileSplit = zname.split('.');
         const fileExt = (fileSplit.pop() || '').toLowerCase();
@@ -280,6 +322,8 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
         }
       })
     );
+
+    showResizeWarnings();
 
     if (showNotif) {
       if (parsedFiles.length > 0) {
@@ -317,6 +361,8 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
       })
     );
 
+    showResizeWarnings();
+
     const filteredFiles = newFiles.flat().filter(isDefined);
     if (filteredFiles.length > MAX_FILES_ALLOWED - imageList.length) {
       showErrorNotification({
@@ -350,8 +396,23 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
           ],
         };
       });
-      // TODO [bw] don't invalidate, just update
+
       await queryUtils.model.getMyTrainingModels.invalidate();
+      // queryUtils.model.getMyTrainingModels.setInfiniteData(
+      //   {}, // fix this to have right filters
+      //   produce((old) => {
+      //     if (!old?.pages?.length) return;
+      //
+      //     for (const page of old.pages) {
+      //       for (const item of page.items) {
+      //         if (item.id === thisModelVersion.id) {
+      //           item.files[0].metadata = request.metadata!;
+      //           return;
+      //         }
+      //       }
+      //     }
+      //   })
+      // );
     },
   });
 
@@ -377,6 +438,7 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
         versionToUpdate.files = [
           {
             id: response.id,
+            name: request.name!,
             url: request.url!,
             type: request.type!,
             metadata: request.metadata!,
@@ -393,11 +455,34 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
           ],
         };
       });
-      // TODO [bw] don't invalidate, just update
+
       await queryUtils.model.getMyTrainingModels.invalidate();
 
-      setZipping(false);
-      goNext(model.id, thisStep);
+      // queryUtils.model.getMyTrainingModels.setInfiniteData(
+      //   {}, // fix this to have limit and page?
+      //   produce((old) => {
+      //     if (!old?.pages?.length) return;
+      //
+      //     for (const page of old.pages) {
+      //       for (const item of page.items) {
+      //         if (item.id === thisModelVersion.id) {
+      //           item.files = [
+      //             {
+      //               id: response.id,
+      //               url: request.url!,
+      //               type: request.type!,
+      //               metadata: request.metadata!,
+      //               sizeKB: request.sizeKB!,
+      //             },
+      //           ];
+      //           return;
+      //         }
+      //       }
+      //     }
+      //   })
+      // );
+
+      goNext(model.id, thisStep, () => setZipping(false));
     },
     onError(error) {
       setZipping(false);
@@ -430,24 +515,15 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoCaptioning.url]);
 
-  useEffect(() => {
-    const imageTags = debouncedImageList
-      .flatMap((i) => getCaptionAsList(i.caption))
-      .filter((v) => (tagSearchInput.length > 0 ? v.includes(tagSearchInput) : v));
-    const tagCounts = imageTags.reduce(
-      (a: { [key: string]: number }, c) => (a[c] ? ++a[c] : (a[c] = 1), a),
-      {}
-    );
-    // .reduce((a, c) => (a[c] = a[c] || 0, a[c]++, a), {})
-    const sortedTagCounts = Object.entries(tagCounts).sort(([, a], [, b]) => b - a);
-    setTagList(sortedTagCounts);
-    setSelectedTags((s) => s.filter((st) => imageTags.includes(st)));
-  }, [debouncedImageList, tagSearchInput]);
-
   const filteredImages = imageList.filter((i) => {
     if (!selectedTags.length) return true;
-    const capts = getCaptionAsList(i.caption).filter((c) => selectedTags.includes(c));
-    return capts.length > 0;
+    const capts: string[] = [];
+    if (selectedTags.includes(blankTagStr) && getCaptionAsList(i.caption).length === 0)
+      capts.push(blankTagStr);
+    const mergedCapts = capts.concat(
+      getCaptionAsList(i.caption).filter((c) => selectedTags.includes(c))
+    );
+    return mergedCapts.length > 0;
   });
 
   useEffect(() => {
@@ -456,14 +532,6 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTags]);
-
-  const removeCaptions = (tags: string[]) => {
-    const newImageList = imageList.map((i) => {
-      const capts = getCaptionAsList(i.caption).filter((c) => !tags.includes(c));
-      return { ...i, caption: capts.join(', ') };
-    });
-    setImageList(model.id, newImageList);
-  };
 
   const handleNextAfterCheck = async (dlOnly = false) => {
     setZipping(true);
@@ -505,7 +573,7 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
       });
 
       try {
-        await upload(
+        const uploadResp = await upload(
           {
             file: blobFile,
             type: UploadType.TrainingImages,
@@ -533,8 +601,8 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
                     ownRights && shareDataset
                       ? ModelFileVisibility.Public
                       : ownRights
-                      ? ModelFileVisibility.Sensitive
-                      : ModelFileVisibility.Private,
+                        ? ModelFileVisibility.Sensitive
+                        : ModelFileVisibility.Private,
                   metadata,
                 });
               } catch (e: unknown) {
@@ -544,7 +612,7 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
                   icon: <IconX size={18} />,
                   color: 'red',
                   title: 'Failed to upload archive.',
-                  message: '',
+                  message: 'Please try again (or contact us if it continues)',
                 });
               }
             } else {
@@ -552,6 +620,16 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
             }
           }
         );
+        if (!uploadResp) {
+          setZipping(false);
+          updateNotification({
+            id: notificationId,
+            icon: <IconX size={18} />,
+            color: 'red',
+            title: 'Failed to upload archive.',
+            message: 'Please try again (or contact us if it continues)',
+          });
+        }
       } catch (e) {
         setZipping(false);
         updateNotification({
@@ -576,8 +654,8 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
             ownRights && shareDataset
               ? ModelFileVisibility.Public
               : ownRights
-              ? ModelFileVisibility.Sensitive
-              : ModelFileVisibility.Private,
+                ? ModelFileVisibility.Sensitive
+                : ModelFileVisibility.Private,
         });
         setZipping(false);
       }
@@ -676,8 +754,8 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
                   totalCaptioned === 0
                     ? theme.colors.red[5]
                     : totalCaptioned < imageList.length
-                    ? theme.colors.orange[5]
-                    : theme.colors.green[5]
+                      ? theme.colors.orange[5]
+                      : theme.colors.green[5]
                 }
               >
                 {`${totalCaptioned} / ${imageList.length} captioned`}
@@ -771,9 +849,8 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
                       autoCaptioning.total) *
                     100
                   }
-                  label={`${autoCaptioning.successes + autoCaptioning.fails.length} / ${
-                    autoCaptioning.total
-                  }`}
+                  label={`${autoCaptioning.successes + autoCaptioning.fails.length} / ${autoCaptioning.total
+                    }`}
                   size="xl"
                   radius="xl"
                   striped
@@ -794,148 +871,12 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
         )}
 
         {imageList.length > 0 && (
-          <Accordion variant="contained" transitionDuration={0}>
-            <Accordion.Item value="caption-viewer">
-              <Accordion.Control>
-                <Group spacing="xs">
-                  <Text>Caption Viewer</Text>
-                  {selectedTags.length > 0 && <Badge color="red">{selectedTags.length}</Badge>}
-                </Group>
-              </Accordion.Control>
-              <Accordion.Panel>
-                <Stack>
-                  <Group>
-                    <TextInput
-                      icon={<IconSearch size={16} />}
-                      placeholder="Search tags"
-                      value={tagSearchInput}
-                      onChange={(event) =>
-                        setTagSearchInput(event.currentTarget.value.toLowerCase())
-                      }
-                      style={{ flexGrow: 1 }}
-                      rightSection={
-                        <ActionIcon
-                          onClick={() => {
-                            setTagSearchInput('');
-                          }}
-                          disabled={!tagSearchInput.length}
-                        >
-                          <IconX size={16} />
-                        </ActionIcon>
-                      }
-                    />
-                    <Button
-                      disabled={!selectedTags.length}
-                      size="sm"
-                      variant="light"
-                      color="red"
-                      onClick={() => setSelectedTags([])}
-                    >
-                      Deselect All
-                    </Button>
-                    <Menu withArrow>
-                      <Menu.Target>
-                        <Button disabled={!selectedTags.length} rightIcon={<IconChevronDown />}>
-                          Actions
-                        </Button>
-                      </Menu.Target>
-                      <Menu.Dropdown>
-                        <Menu.Item
-                          icon={<IconTrash size={14} />}
-                          onClick={() =>
-                            openConfirmModal({
-                              title: 'Remove these captions?',
-                              children: (
-                                <Stack>
-                                  <Text>
-                                    The following captions will be removed from all images:
-                                  </Text>
-                                  <Group>
-                                    {selectedTags.map((st) => (
-                                      <Badge key={st}>{st}</Badge>
-                                    ))}
-                                  </Group>
-                                </Stack>
-                              ),
-                              labels: { cancel: 'Cancel', confirm: 'Confirm' },
-                              centered: true,
-                              onConfirm: () => removeCaptions(selectedTags),
-                            })
-                          }
-                        >
-                          {`Remove tag${selectedTags.length === 1 ? '' : 's'} (${
-                            selectedTags.length
-                          })`}
-                        </Menu.Item>
-                        <Menu.Item
-                          icon={<IconReplace size={14} />}
-                          onClick={() =>
-                            dialogStore.trigger({
-                              component: TrainingEditTagsModal,
-                              props: {
-                                selectedTags,
-                                imageList,
-                                modelId: model.id,
-                                setImageList,
-                                setSelectedTags,
-                              },
-                            })
-                          }
-                        >
-                          {`Replace tag${selectedTags.length === 1 ? '' : 's'} (${
-                            selectedTags.length
-                          })`}
-                        </Menu.Item>
-                      </Menu.Dropdown>
-                    </Menu>
-                  </Group>
-                  {!tagList.length ? (
-                    <Text size="md" my="sm" align="center">
-                      No captions to display.
-                    </Text>
-                  ) : (
-                    <Chip.Group
-                      value={selectedTags}
-                      onChange={setSelectedTags}
-                      multiple
-                      mah={300}
-                      // mih={40}
-                      // resize: 'vertical'
-                      style={{ overflowY: 'auto', rowGap: '6px' }}
-                    >
-                      {tagList.map((t) => (
-                        <Chip
-                          key={t[0]}
-                          value={t[0]}
-                          styles={{
-                            root: { lineHeight: 0, overflow: 'hidden' },
-                            label: { display: 'flex' },
-                            iconWrapper: { overflow: 'initial', paddingRight: '10px' },
-                          }}
-                        >
-                          <Group h="100%" maw="100%">
-                            {/* TODO when switching to m7, change this to a class */}
-                            <Text
-                              style={{
-                                maxWidth: '90%',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                              }}
-                            >
-                              {t[0]}
-                            </Text>
-                            <Badge color="gray" variant="outline" radius="xl" size="sm">
-                              {t[1]}
-                            </Badge>
-                          </Group>
-                        </Chip>
-                      ))}
-                    </Chip.Group>
-                  )}
-                </Stack>
-              </Accordion.Panel>
-            </Accordion.Item>
-          </Accordion>
+          <TrainingImagesCaptionViewer
+            selectedTags={selectedTags}
+            setSelectedTags={setSelectedTags}
+            modelId={model.id}
+            numImages={filteredImages.length}
+          />
         )}
 
         {loadingZip ? (
@@ -950,66 +891,72 @@ export const TrainingFormImages = ({ model }: { model: NonNullable<TrainingModel
               .slice((page - 1) * maxImgPerPage, (page - 1) * maxImgPerPage + maxImgPerPage)
               .map((imgData, index) => {
                 return (
-                  <Stack
-                    key={index}
-                    // style={{ justifyContent: 'center', alignItems: 'center', position: 'relative' }}
-                    style={{ justifyContent: 'flex-start' }}
-                  >
+                  <Card key={index} shadow="sm" p={4} radius="sm" withBorder>
                     {/* TODO [bw] probably lightbox here or something similar */}
-                    <div className={classes.imgOverlay}>
-                      <ActionIcon
-                        color="red"
-                        variant="filled"
-                        size="md"
-                        disabled={autoCaptioning.isRunning}
-                        onClick={() => {
-                          const newLen = imageList.length - 1;
-                          setImageList(
-                            model.id,
-                            imageList.filter((i) => i.url !== imgData.url)
-                          );
-                          if (
-                            page === Math.ceil(imageList.length / maxImgPerPage) &&
-                            newLen % maxImgPerPage === 0
-                          )
-                            setPage(Math.max(page - 1, 1));
-                        }}
-                        className={cx(classes.trash, 'trashIcon')}
-                      >
-                        <IconTrash />
-                      </ActionIcon>
-                      <MImage
-                        alt={imgData.name}
-                        src={imgData.url}
-                        imageProps={{
-                          style: {
-                            height: '250px',
-                            // if we want to show full image, change objectFit to contain
-                            objectFit: 'cover',
-                            // object-position: top;
-                            width: '100%',
-                          },
-                          // onLoad: () => URL.revokeObjectURL(imageUrl)
-                        }}
-                      />
-                    </div>
-                    {/* would like to use highlight here for selected tags but only works with direct strings */}
-                    {/* TODO we could also eventually replace these with little chips */}
-                    <Textarea
-                      placeholder="Enter caption data..."
-                      autosize
-                      disabled={autoCaptioning.isRunning}
-                      minRows={1}
-                      maxRows={4}
-                      value={imgData.caption}
-                      onChange={(event) => {
-                        updateImage(model.id, {
-                          matcher: getShortNameFromUrl(imgData),
-                          caption: event.currentTarget.value,
-                        });
-                      }}
+                    <Card.Section mb="xs">
+                      <div className={classes.imgOverlay}>
+                        <Group spacing={4} className={cx(classes.trash, 'trashIcon')}>
+                          <Tooltip label="Remove captions">
+                            <ActionIcon
+                              color="violet"
+                              variant="filled"
+                              size="md"
+                              disabled={autoCaptioning.isRunning || !imgData.caption.length}
+                              onClick={() => {
+                                updateImage(model.id, {
+                                  matcher: getShortNameFromUrl(imgData),
+                                  caption: '',
+                                });
+                              }}
+                            >
+                              <IconTagsOff />
+                            </ActionIcon>
+                          </Tooltip>
+                          <Tooltip label="Remove image">
+                            <ActionIcon
+                              color="red"
+                              variant="filled"
+                              size="md"
+                              disabled={autoCaptioning.isRunning}
+                              onClick={() => {
+                                const newLen = imageList.length - 1;
+                                setImageList(
+                                  model.id,
+                                  imageList.filter((i) => i.url !== imgData.url)
+                                );
+                                if (
+                                  page === Math.ceil(imageList.length / maxImgPerPage) &&
+                                  newLen % maxImgPerPage === 0
+                                )
+                                  setPage(Math.max(page - 1, 1));
+                              }}
+                            >
+                              <IconTrash />
+                            </ActionIcon>
+                          </Tooltip>
+                        </Group>
+                        <MImage
+                          alt={imgData.name}
+                          src={imgData.url}
+                          imageProps={{
+                            style: {
+                              height: '250px',
+                              // if we want to show full image, change objectFit to contain
+                              objectFit: 'cover',
+                              // object-position: top;
+                              width: '100%',
+                            },
+                            // onLoad: () => URL.revokeObjectURL(imageUrl)
+                          }}
+                        />
+                      </div>
+                    </Card.Section>
+                    <TrainingImagesCaptions
+                      imgData={imgData}
+                      modelId={model.id}
+                      selectedTags={selectedTags}
                     />
-                  </Stack>
+                  </Card>
                 );
               })}
           </SimpleGrid>

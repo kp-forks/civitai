@@ -155,7 +155,11 @@ export default function ResourceSelectModal({
     <ResourceSelectContext.Provider
       value={{ onSelect: handleSelect, canGenerate, isTraining, resources: _resources }}
     >
-      <InstantSearch searchClient={searchClient} indexName={searchIndexMap.models}>
+      <InstantSearch
+        searchClient={searchClient}
+        indexName={searchIndexMap.models}
+        future={{ preserveSharedStateOnUnmount: true }}
+      >
         <Configure hitsPerPage={20} filters={[...filters, ...exclude].join(' AND ')} />
         <Stack>
           <CustomSearchBox isMobile={isMobile} autoFocus />
@@ -283,7 +287,8 @@ function ResourceSelectCard({
 
   const resourceFilter = resources.find((x) => x.type === data.type);
   const versions = data.versions.filter((version) => {
-    if (isTraining && version.baseModel === 'SDXL Lightning') return false;
+    if (isTraining && !['SD 1.4', 'SD 1.5', 'SDXL 1.0', 'Pony'].includes(version.baseModel))
+      return false;
     if (canGenerate === undefined) return true;
     return (
       version.canGenerate === canGenerate &&

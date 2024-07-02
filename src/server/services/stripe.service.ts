@@ -106,6 +106,7 @@ export const getUserSubscription = async ({ userId }: Schema.GetUserSubscription
           interval: true,
           intervalCount: true,
           currency: true,
+          active: true,
         },
       },
     },
@@ -163,6 +164,12 @@ export const createSubscribeSession = async ({
   const { data: subscriptions } = await stripe.subscriptions.list({
     customer: customerId,
   });
+  const customer = await stripe.customers.retrieve(customerId);
+
+  if (!customer || customer.deleted) {
+    throw throwBadRequestError(`Could not find customer with id: ${customerId}`);
+  }
+
   const price = await stripe.prices.retrieve(priceId);
 
   if (!price || !membershipProducts.find((x) => x.id === (price.product as string))) {
@@ -192,6 +199,29 @@ export const createSubscribeSession = async ({
 
     const isActivePrice = subscriptionItem.price.id === price.id;
     if (!isActivePrice) {
+      // Confirm user has a default credit card:
+      if (!customer.default_source) {
+        // Attempt to get and set outselves:
+        const paymentMethods = await stripe.paymentMethods.list({
+          customer: customerId,
+          type: 'card',
+        });
+
+        if (paymentMethods.data.length === 0) {
+          return {
+            sessionId: null,
+            url: `/user/account?missingPaymentMethod=true&tier=${newTier}#payment-methods`,
+          };
+        } else {
+          // Set the first card as the default:
+          await stripe.customers.update(customerId, {
+            invoice_settings: {
+              default_payment_method: paymentMethods.data[0].id,
+            },
+          });
+        }
+      }
+
       const isFounder =
         (activeProduct?.metadata as Schema.ProductMetadata)?.tier ===
         constants.memberships.founderDiscount.tier;
@@ -694,10 +724,10 @@ export const manageInvoicePaid = async (invoice: Stripe.Invoice) => {
       createBuzzTransaction({
         fromAccountId: 0,
         toAccountId: user.id,
-        type: TransactionType.Reward,
+        type: TransactionType.Purchase,
         externalTransactionId: invoice.id,
         amount: billedProductMeta.monthlyBuzz ?? 3000, // assume a min of 3000.
-        description: `Membership bonus.`,
+        description: `Membership bonus`,
         details: { invoiceId: invoice.id },
       })
     ).catch(handleLogError);
@@ -759,6 +789,8 @@ export const getBuzzPackages = async () => {
   });
 };
 
+const futureUsageNotSupportedPaymentMethods = ['customer_balance', 'wechat_pay'];
+
 export const getPaymentIntent = async ({
   unitAmount,
   currency = Currency.USD,
@@ -766,6 +798,7 @@ export const getPaymentIntent = async ({
   paymentMethodTypes,
   customerId,
   user,
+  setupFuturePayment = true,
 }: Schema.PaymentIntentCreationSchema & {
   user: { id: number; email: string };
   customerId?: string;
@@ -790,15 +823,18 @@ export const getPaymentIntent = async ({
   const paymentIntent = await stripe.paymentIntents.create({
     amount: unitAmount,
     currency,
-    automatic_payment_methods: !paymentMethodTypes
-      ? {
-          enabled: true,
-        }
-      : undefined,
+    automatic_payment_methods:
+      !paymentMethodTypes && setupFuturePayment
+        ? {
+            enabled: true,
+          }
+        : undefined,
     customer: customerId,
     metadata: metadata as MetadataParam,
-    payment_method_types: paymentMethodTypes || undefined,
-    setup_future_usage: 'off_session',
+    payment_method_types: setupFuturePayment
+      ? paymentMethodTypes || undefined
+      : futureUsageNotSupportedPaymentMethods,
+    setup_future_usage: setupFuturePayment ? 'off_session' : undefined,
   });
 
   return {

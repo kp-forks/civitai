@@ -3,8 +3,9 @@ import { ImageMetadata } from '~/server/schema/media.schema';
 import { createBlurHash } from '~/utils/blurhash';
 import { getMetadata } from '~/utils/metadata';
 import { auditMetaData } from '~/utils/metadata/audit';
+import { createImageElement } from '~/utils/image-utils';
 
-const loadImage = async (src: string) =>
+export const loadImage = async (src: string) =>
   new Promise<HTMLImageElement>((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);

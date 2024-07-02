@@ -6,7 +6,7 @@ import {
   TagEngagementType,
 } from '@prisma/client';
 import { z } from 'zod';
-import { constants } from '~/server/common/constants';
+import { creatorCardStats, constants } from '~/server/common/constants';
 import { OnboardingSteps } from '~/server/common/enums';
 import { getAllQuerySchema } from '~/server/schema/base.schema';
 import { userSettingsChat } from '~/server/schema/chat.schema';
@@ -72,6 +72,13 @@ export const profilePictureSchema = z.object({
   type: z.nativeEnum(MediaType).default(MediaType.image),
 });
 
+export const creatorCardStatsPreferences = z.array(z.string()).max(3);
+
+export type UserPublicSettingsSchema = z.infer<typeof userPublicSettingsSchema>;
+export const userPublicSettingsSchema = z.object({
+  creatorCardStatsPreferences: creatorCardStatsPreferences.optional(),
+});
+
 export const userUpdateSchema = z.object({
   id: z.number(),
   username: usernameInputSchema.optional(),
@@ -83,6 +90,8 @@ export const userUpdateSchema = z.object({
   profilePicture: profilePictureSchema.nullish(),
   badgeId: z.number().nullish(),
   nameplateId: z.number().nullish(),
+  profileDecorationId: z.number().nullish(),
+  profileBackgroundId: z.number().nullish(),
   autoplayGifs: z.boolean().optional(),
   filePreferences: z
     .object({
@@ -173,6 +182,7 @@ export type ProhibitedSources = z.infer<typeof prohibitedSources>;
 export type ReportProhibitedRequestInput = z.infer<typeof reportProhibitedRequestSchema>;
 export const reportProhibitedRequestSchema = z.object({
   prompt: z.string().optional(),
+  negativePrompt: z.string().optional(),
   source: prohibitedSources.optional(),
 });
 
@@ -187,6 +197,8 @@ export const userSettingsSchema = z.object({
   dismissedAlerts: z.array(z.string()).optional(),
   chat: userSettingsChat.optional(),
   airEmail: z.string().email().optional(),
+  creatorsProgramCodeOfConductAccepted: z.boolean().optional(),
+  cosmeticStoreLastViewed: z.date().nullish(),
 });
 
 const [featureKey, ...otherKeys] = featureFlagKeys;
@@ -200,6 +212,7 @@ export const toggleFeatureInputSchema = z.object({
 export type SetUserSettingsInput = z.infer<typeof setUserSettingsInput>;
 export const setUserSettingsInput = z.object({
   creatorsProgramCodeOfConductAccepted: z.boolean().optional(),
+  cosmeticStoreLastViewed: z.date().optional(),
 });
 
 export const dismissAlertSchema = z.object({ alertId: z.string() });
@@ -215,3 +228,9 @@ export const userOnboardingSchema = z.discriminatedUnion('step', [
     source: z.string().optional(),
   }),
 ]);
+
+export const setLeaderboardEligbilitySchema = z.object({
+  id: z.number(),
+  setTo: z.boolean(),
+});
+export type SetLeaderboardEligibilitySchema = z.infer<typeof setLeaderboardEligbilitySchema>;

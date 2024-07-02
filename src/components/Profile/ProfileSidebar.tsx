@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Anchor,
   Box,
   Button,
   Divider,
@@ -14,6 +15,7 @@ import { CosmeticType } from '@prisma/client';
 import {
   IconAlertCircle,
   IconMapPin,
+  IconExternalLink,
   IconPencilMinus,
   IconRss,
   IconShare3,
@@ -40,6 +42,7 @@ import { formatDate } from '~/utils/date-helpers';
 import { sortDomainLinks } from '~/utils/domain-link';
 import { trpc } from '~/utils/trpc';
 import { AlertWithIcon } from '../AlertWithIcon/AlertWithIcon';
+import { BadgeCosmetic } from '~/server/selectors/cosmetic.selector';
 
 const mapSize: Record<
   'mobile' | 'desktop',
@@ -93,6 +96,7 @@ export function ProfileSidebar({ username, className }: { username: string; clas
   const isCurrentUser = currentUser?.id === user?.id;
   const muted = !!user?.muted;
   const [showAllBadges, setShowAllBadges] = useState<boolean>(false);
+  const [enlargedBadge, setEnlargedBadge] = useState<number | null>(null);
   const sizeOpts = mapSize[isMobile ? 'mobile' : 'desktop'];
 
   const badges = useMemo(
@@ -124,7 +128,7 @@ export function ProfileSidebar({ username, className }: { username: string; clas
       radius="xl"
       fullWidth
     >
-      Edit profile
+      Customize profile
     </Button>
   );
   const followUserBtn = !isCurrentUser && (
@@ -184,9 +188,9 @@ export function ProfileSidebar({ username, className }: { username: string; clas
         <Group align="flex-start" position="apart" w={!isMobile ? '100%' : undefined}>
           <UserAvatar
             avatarSize={sizeOpts.avatar}
-            user={user}
+            user={{ ...user, cosmetics: equippedCosmetics }}
             size={sizeOpts.username}
-            radius="md"
+            radius="xl"
           />
 
           {!isMobile && (
@@ -260,6 +264,7 @@ export function ProfileSidebar({ username, className }: { username: string; clas
           followers={stats.followerCountAllTime}
           favorites={stats.thumbsUpCountAllTime}
           downloads={stats.downloadCountAllTime}
+          generations={stats.generationCountAllTime}
         />
       )}
 
@@ -272,23 +277,46 @@ export function ProfileSidebar({ username, className }: { username: string; clas
           </Text>
           <Group spacing="xs">
             {(showAllBadges ? badges : badges.slice(0, sizeOpts.badgeCount)).map((award) => {
-              const data = (award.data ?? {}) as { url?: string; animated?: boolean };
+              const data = (award.data ?? {}) as BadgeCosmetic['data'];
               const url = (data.url ?? '') as string;
+              const isEnlarged = enlargedBadge === award.id;
 
               if (!url) {
                 return null;
               }
 
+              const style = {
+                transition: 'transform 0.1s',
+                cursor: 'pointer',
+                width: sizeOpts.badges,
+                transform: isEnlarged ? 'scale(2)' : undefined,
+                zIndex: isEnlarged ? 100 : undefined,
+                filter: isEnlarged ? 'drop-shadow(0px 0px 3px #000000)' : undefined,
+              };
+
               return (
-                <Popover key={award.id} withArrow width={200} position="top">
+                <Popover
+                  key={award.id}
+                  withArrow
+                  width={200}
+                  position="top"
+                  offset={35}
+                  onChange={(opened) => {
+                    if (opened) {
+                      setEnlargedBadge(award.id);
+                    } else {
+                      setEnlargedBadge((curr) => (curr === award.id ? null : curr));
+                    }
+                  }}
+                >
                   <Popover.Target>
                     {data.animated ? (
-                      <Box style={{ cursor: 'pointer', width: sizeOpts.badges }}>
-                        <EdgeMedia src={url} alt={award.name} width="original" />
+                      <Box style={style}>
+                        <EdgeMedia src={url} alt={award.name} />
                       </Box>
                     ) : (
-                      <Box style={{ cursor: 'pointer' }}>
-                        <EdgeMedia src={url} alt={award.name} width={sizeOpts.badges} />
+                      <Box style={style}>
+                        <EdgeMedia src={url} alt={award.name} />
                       </Box>
                     )}
                   </Popover.Target>
@@ -297,6 +325,19 @@ export function ProfileSidebar({ username, className }: { username: string; clas
                       <Text size="sm" align="center" weight={500}>
                         {award.name}
                       </Text>
+                      {award.videoUrl && (
+                        <Anchor
+                          href={award.videoUrl}
+                          size="xs"
+                          opacity={0.9}
+                          mt={4}
+                          target="_blank"
+                        >
+                          <span style={{ display: 'flex', alignItems: 'center' }}>
+                            How it was made <IconExternalLink size={14} style={{ marginLeft: 4 }} />
+                          </span>
+                        </Anchor>
+                      )}
                     </Stack>
                   </Popover.Dropdown>
                 </Popover>

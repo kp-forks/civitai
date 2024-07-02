@@ -17,27 +17,33 @@ import {
 } from '@mantine/core';
 import { openConfirmModal } from '@mantine/modals';
 import { NextLink } from '@mantine/next';
+import { showNotification, updateNotification } from '@mantine/notifications';
 import {
   IconArrowBackUp,
   IconBan,
   IconCategory,
+  IconCrystalBall,
   IconDotsVertical,
   IconFileText,
   IconFlag,
   IconFolder,
   IconInfoCircle,
+  IconGraphOff,
+  IconGraph,
   IconLayoutList,
   IconMicrophone,
   IconMicrophoneOff,
   IconPhoto,
   IconTrash,
   IconUserMinus,
+  IconX,
 } from '@tabler/icons-react';
 import { useRouter } from 'next/router';
 import React, { useEffect } from 'react';
 import { NotFound } from '~/components/AppLayout/NotFound';
 import { TipBuzzButton } from '~/components/Buzz/TipBuzzButton';
 import { ChatUserButton } from '~/components/Chat/ChatUserButton';
+import { useAccountContext } from '~/components/CivitaiWrapped/AccountProvider';
 import { CivitaiTabs } from '~/components/CivitaiWrapped/CivitaiTabs';
 import { DomainIcon } from '~/components/DomainIcon/DomainIcon';
 import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
@@ -57,25 +63,32 @@ import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { openContext } from '~/providers/CustomModalsProvider';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { constants } from '~/server/common/constants';
+import { EncryptedDataSchema, impersonateEndpoint } from '~/server/schema/civToken.schema';
 import { ReportEntity } from '~/server/schema/report.schema';
 import { formatDate } from '~/utils/date-helpers';
 import { sortDomainLinks } from '~/utils/domain-link';
 import { containerQuery } from '~/utils/mantine-css-helpers';
 import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
 import { abbreviateNumber } from '~/utils/number-helpers';
+import { QS } from '~/utils/qs';
 import { postgresSlugify } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
 
 export const UserContextMenu = ({ username }: { username: string }) => {
   const queryUtils = trpc.useUtils();
   const currentUser = useCurrentUser();
+  const features = useFeatureFlags();
+  const { swapAccount, setOgAccount } = useAccountContext();
+
   const { data: user, isLoading: userLoading } = trpc.user.getCreator.useQuery(
     { username },
     { enabled: username !== constants.system.user.username }
   );
   const isMod = currentUser && currentUser.isModerator;
   const isSameUser =
-    !!currentUser && postgresSlugify(currentUser.username) === postgresSlugify(username);
+    !!currentUser &&
+    !!currentUser.username &&
+    postgresSlugify(currentUser.username) === postgresSlugify(username);
   const removeContentMutation = trpc.user.removeAllContent.useMutation();
   const deleteAccountMutation = trpc.user.delete.useMutation({
     onSuccess() {
@@ -134,6 +147,25 @@ export const UserContextMenu = ({ username }: { username: string }) => {
     },
   });
 
+  const toggleLeaderboardMutation = trpc.user.setLeaderboardEligibility.useMutation({
+    async onMutate({ setTo }) {
+      await queryUtils.user.getCreator.cancel({ username });
+
+      const prevUser = queryUtils.user.getCreator.getData({ username });
+      queryUtils.user.getCreator.setData({ username }, () =>
+        prevUser ? { ...prevUser, excludeFromLeaderboards: setTo } : undefined
+      );
+
+      return { prevUser };
+    },
+    onError(_error, _vars, context) {
+      queryUtils.user.getCreator.setData({ username }, context?.prevUser);
+      showErrorNotification({
+        error: new Error('Unable to remove user from leaderboards, please try again.'),
+      });
+    },
+  });
+
   const theme = useMantineTheme();
 
   const handleToggleMute = () => {
@@ -151,6 +183,20 @@ export const UserContextMenu = ({ username }: { username: string }) => {
           onConfirm: () => toggleBanMutation.mutate({ id: user.id }),
         });
     }
+  };
+  const handleToggleLeaderboardEligibility = () => {
+    if (!user) return;
+    if (user.excludeFromLeaderboards)
+      toggleLeaderboardMutation.mutate({ id: user.id, setTo: !user.excludeFromLeaderboards });
+    else
+      openConfirmModal({
+        title: 'Remove from Leaderboards',
+        children: `Are you sure you want to remove this user from leaderboards? This will take effect at the next refresh.`,
+        labels: { confirm: 'Yes, remove from leaderboards', cancel: 'Cancel' },
+        confirmProps: { color: 'red' },
+        onConfirm: () =>
+          toggleLeaderboardMutation.mutate({ id: user.id, setTo: !user.excludeFromLeaderboards }),
+      });
   };
   const handleRemoveContent = () => {
     if (!user) return;
@@ -172,13 +218,43 @@ export const UserContextMenu = ({ username }: { username: string }) => {
       onConfirm: () => deleteAccountMutation.mutate({ id: user.id }),
     });
   };
+  const handleImpersonate = async () => {
+    if (!user || !currentUser || !features.impersonation || user.id === currentUser?.id) return;
+    const notificationId = `impersonate-${user.id}`;
+
+    showNotification({
+      id: notificationId,
+      loading: true,
+      autoClose: false,
+      title: 'Switching accounts...',
+      message: `-> ${user.username} (${user.id})`,
+    });
+
+    const tokenResp = await fetch(`${impersonateEndpoint}?${QS.stringify({ userId: user.id })}`);
+    if (!tokenResp.ok) {
+      const errMsg = await tokenResp.text();
+      updateNotification({
+        id: notificationId,
+        icon: <IconX size={18} />,
+        color: 'red',
+        title: 'Failed to switch',
+        message: errMsg,
+      });
+      return;
+    }
+
+    const tokenJson: { token: EncryptedDataSchema } = await tokenResp.json();
+
+    setOgAccount({ id: currentUser.id, username: currentUser.username ?? '(unk)' });
+    await swapAccount(tokenJson.token);
+  };
 
   if (userLoading || !user) {
     return null;
   }
 
   return (
-    <Menu position="left" withinPortal>
+    <Menu position="left-start" withinPortal>
       <Menu.Target>
         <ActionIcon
           loading={removeContentMutation.isLoading}
@@ -205,6 +281,15 @@ export const UserContextMenu = ({ username }: { username: string }) => {
                   Lookup User
                 </Menu.Item>
               )}
+              {features.impersonation && user.id !== currentUser.id && (
+                <Menu.Item
+                  color="yellow"
+                  icon={<IconCrystalBall size={14} stroke={1.5} />}
+                  onClick={handleImpersonate}
+                >
+                  Impersonate User
+                </Menu.Item>
+              )}
               <Menu.Item
                 color={user.bannedAt ? 'green' : 'red'}
                 icon={
@@ -219,19 +304,34 @@ export const UserContextMenu = ({ username }: { username: string }) => {
                 {user.bannedAt ? 'Restore user' : 'Ban user'}
               </Menu.Item>
               <Menu.Item
+                color={user.excludeFromLeaderboards ? 'green' : 'red'}
+                icon={
+                  !user.excludeFromLeaderboards ? (
+                    <IconGraphOff size={14} stroke={1.5} />
+                  ) : (
+                    <IconGraph size={14} stroke={1.5} />
+                  )
+                }
+                onClick={handleToggleLeaderboardEligibility}
+              >
+                {user.excludeFromLeaderboards
+                  ? 'Include in leaderboards'
+                  : 'Exclude from leaderboards'}
+              </Menu.Item>
+              {/* <Menu.Item
                 color="red"
                 icon={<IconTrash size={14} stroke={1.5} />}
                 onClick={handleRemoveContent}
               >
                 Remove all content
-              </Menu.Item>
-              <Menu.Item
+              </Menu.Item> */}
+              {/* <Menu.Item
                 color="red"
                 icon={<IconUserMinus size={14} stroke={1.5} />}
                 onClick={handleDeleteAccount}
               >
                 Delete Account
-              </Menu.Item>
+              </Menu.Item> */}
               <Menu.Item
                 icon={
                   user.muted ? (
@@ -514,19 +614,11 @@ function LayoutSelector({ children }: { children: React.ReactNode }) {
   const { username } = router.query as { username: string };
   const features = useFeatureFlags();
 
-  if (features.profileOverhaul) {
-    return (
-      <ProfileLayout username={username}>
-        <ProfileHeader username={username} />
-        {children}
-      </ProfileLayout>
-    );
-  }
-
   return (
-    <ScrollArea>
-      <NestedLayout>{children}</NestedLayout>
-    </ScrollArea>
+    <ProfileLayout username={username}>
+      <ProfileHeader username={username} />
+      {children}
+    </ProfileLayout>
   );
 }
 

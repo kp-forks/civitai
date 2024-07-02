@@ -15,11 +15,12 @@ import { SessionUser } from 'next-auth';
 
 import { env } from '~/env/server.mjs';
 import { BaseModel, BaseModelType, CacheTTL } from '~/server/common/constants';
-import { ModelSort, NsfwLevel, SearchIndexUpdateQueueAction } from '~/server/common/enums';
+import { ModelSort, SearchIndexUpdateQueueAction } from '~/server/common/enums';
 import { Context } from '~/server/createContext';
 import { dbRead, dbWrite } from '~/server/db/client';
 import { getDbWithoutLag, preventReplicationLag } from '~/server/db/db-helpers';
 import { requestScannerTasks } from '~/server/jobs/scan-files';
+import { dataForModelsCache } from '~/server/redis/caches';
 import { redis } from '~/server/redis/client';
 import { GetAllSchema, GetByIdInput } from '~/server/schema/base.schema';
 import {
@@ -36,6 +37,7 @@ import {
 } from '~/server/schema/model.schema';
 import { isNotTag, isTag } from '~/server/schema/tag.schema';
 import { imagesSearchIndex, modelsSearchIndex } from '~/server/search-index';
+import { ContentDecorationCosmetic, WithClaimKey } from '~/server/selectors/cosmetic.selector';
 import { associatedResourceSelect } from '~/server/selectors/model.selector';
 import { modelFileSelect } from '~/server/selectors/modelFile.selector';
 import { simpleUserSelect, userWithCosmeticsSelect } from '~/server/selectors/user.selector';
@@ -43,14 +45,17 @@ import {
   getAvailableCollectionItemsFilterForUser,
   getUserCollectionPermissionsById,
 } from '~/server/services/collection.service';
+import { getCosmeticsForEntity } from '~/server/services/cosmetic.service';
 import {
   getUnavailableResources,
   prepareModelInOrchestrator,
 } from '~/server/services/generation/generation.service';
 import {
-  getImagesForModelVersionCache,
   getImagesForModelVersion,
+  getImagesForModelVersionCache,
+  ImagesForModelVersions,
 } from '~/server/services/image.service';
+import { getFilesForModelVersionCache } from '~/server/services/model-file.service';
 import { getCategoryTags } from '~/server/services/system-cache';
 import { getCosmeticsForUsers, getProfilePicturesForUsers } from '~/server/services/user.service';
 import { limitConcurrency } from '~/server/utils/concurrency-helpers';
@@ -66,6 +71,7 @@ import {
   getPagination,
   getPagingData,
 } from '~/server/utils/pagination-helpers';
+import { allBrowsingLevelsFlag } from '~/shared/constants/browsingLevel.constants';
 import { decreaseDate } from '~/utils/date-helpers';
 import { prepareFile } from '~/utils/file-helpers';
 import { fromJson, toJson } from '~/utils/json-helpers';
@@ -77,8 +83,6 @@ import {
   SetAssociatedResourcesInput,
   SetModelsCategoryInput,
 } from './../schema/model.schema';
-import { allBrowsingLevelsFlag } from '~/shared/constants/browsingLevel.constants';
-import { getFilesForModelVersionCache } from '~/server/services/model-file.service';
 
 export const getModel = async <TSelect extends Prisma.ModelSelect>({
   id,
@@ -105,6 +109,7 @@ type ModelRaw = {
   description?: string | null;
   type: ModelType;
   poi?: boolean;
+  minor?: boolean;
   nsfw: boolean;
   nsfwLevel: number;
   allowNoCredit?: boolean;
@@ -155,6 +160,7 @@ type ModelRaw = {
     deletedAt: Date | null;
     image: string;
   };
+  cosmetic?: WithClaimKey<ContentDecorationCosmetic> | null;
 };
 
 export const getModelsRaw = async ({
@@ -166,7 +172,7 @@ export const getModelsRaw = async ({
     take?: number;
     skip?: number;
   };
-  include?: Array<'details'>;
+  include?: Array<'details' | 'cosmetics'>;
   user?: { id: number; isModerator?: boolean; username?: string };
 }) => {
   const {
@@ -211,6 +217,7 @@ export const getModelsRaw = async ({
   }
 
   const includeDetails = !!include?.includes('details');
+  const includeCosmetics = !!include?.includes('cosmetics');
   function ifDetails(sql: TemplateStringsArray) {
     return includeDetails ? Prisma.raw(sql[0]) : Prisma.empty;
   }
@@ -352,7 +359,7 @@ export const getModelsRaw = async ({
 
   if (period && period !== MetricTimeframe.AllTime && periodMode !== 'stats') {
     AND.push(
-      Prisma.sql`(COALESCE(m."lastVersionAt", lmv."createdAt") >= ${decreaseDate(
+      Prisma.sql`(m."lastVersionAt" >= ${decreaseDate(
         new Date(),
         1,
         period.toLowerCase() as ManipulateType
@@ -462,11 +469,11 @@ export const getModelsRaw = async ({
     orderBy = `mm."commentCount" DESC, mm."thumbsUpCount" DESC, mm."modelId"`;
   else if (sort === ModelSort.MostCollected)
     orderBy = `mm."collectedCount" DESC, mm."thumbsUpCount" DESC, mm."modelId"`;
-  else if (sort === ModelSort.MostTipped)
-    orderBy = `mm."tippedAmountCount" DESC, mm."thumbsUpCount" DESC, mm."modelId"`;
+  // else if (sort === ModelSort.MostTipped)
+  //   orderBy = `mm."tippedAmountCount" DESC, mm."thumbsUpCount" DESC, mm."modelId"`;
   else if (sort === ModelSort.ImageCount)
     orderBy = `mm."imageCount" DESC, mm."thumbsUpCount" DESC, mm."modelId"`;
-  else if (sort === ModelSort.Oldest) orderBy = `m."lastVersionAt" ASC`;
+  else if (sort === ModelSort.Oldest) orderBy = `m."lastVersionAt" ASC, m."id"`;
 
   // eslint-disable-next-line prefer-const
   let { where: cursorClause, prop: cursorProp } = getCursor(orderBy, cursor);
@@ -487,38 +494,18 @@ export const getModelsRaw = async ({
     )`);
   }
 
-  const modelVersionWhere: Prisma.Sql[] = [];
-
-  if (!sessionUser?.isModerator || !status?.length) {
-    modelVersionWhere.push(Prisma.sql`mv."status" = ${ModelStatus.Published}::"ModelStatus"`);
-  }
-
-  if (baseModels) {
-    modelVersionWhere.push(Prisma.sql`mv."baseModel" IN (${Prisma.join(baseModels, ',')})`);
-  }
-
-  if (!!modelVersionIds?.length) {
-    modelVersionWhere.push(Prisma.sql`mv."id" IN (${Prisma.join(modelVersionIds, ',')})`);
-  }
-
-  if (hidePrivateModels) {
-    modelVersionWhere.push(Prisma.sql`mv."availability" = 'Public'::"Availability"`);
-  }
-
-  // if (!includeDetails) {
-  const browsingLevelQuery = Prisma.sql`(lmv."nsfwLevel" & ${browsingLevel}) != 0`;
+  const browsingLevelQuery = Prisma.sql`(m."nsfwLevel" & ${browsingLevel}) != 0`;
   if (pending && (isModerator || userId)) {
     if (isModerator) {
-      AND.push(Prisma.sql`(${browsingLevelQuery} OR lmv."nsfwLevel" = 0)`);
+      AND.push(Prisma.sql`(${browsingLevelQuery} OR m."nsfwLevel" = 0)`);
     } else if (userId) {
       AND.push(
-        Prisma.sql`(${browsingLevelQuery} OR (lmv."nsfwLevel" = 0 AND m."userId" = ${userId}))`
+        Prisma.sql`(${browsingLevelQuery} OR (m."nsfwLevel" = 0 AND m."userId" = ${userId}))`
       );
     }
   } else {
     AND.push(browsingLevelQuery);
   }
-  // }
 
   const WITH: Prisma.Sql[] = [];
   if (clubId) {
@@ -542,42 +529,7 @@ export const getModelsRaw = async ({
         GROUP BY mv."modelId"
       )
     `);
-
-    modelVersionWhere.push(Prisma.sql`cm."modelVersionId" = mv."id"`);
   }
-  WITH.push(Prisma.sql`"CTE_ModelVersionDetails" AS NOT MATERIALIZED (
-    SELECT
-      mv."id",
-      mv.index,
-      mv."modelId",
-      mv."name",
-      mv."earlyAccessTimeFrame",
-      mv."baseModel",
-      mv."baseModelType",
-      mv."createdAt",
-      mv."trainingStatus",
-      mv."publishedAt",
-      mv."status",
-      mv.availability,
-      mv."nsfwLevel",
-      ${ifDetails`
-        mv."description",
-        mv."trainedWords",
-        mv."vaeId",
-      `}
-      COALESCE((
-        SELECT gc.covered
-        FROM "GenerationCoverage" gc
-        WHERE gc."modelVersionId" = mv.id
-      ), false) AS covered
-    FROM "ModelVersion" mv
-    WHERE
-      ${
-        modelVersionWhere.length > 0
-          ? Prisma.sql`${Prisma.join(modelVersionWhere, ' AND ')}`
-          : Prisma.sql`1 = 1`
-      }
-  )`);
 
   const queryWith = WITH.length > 0 ? Prisma.sql`WITH ${Prisma.join(WITH, ', ')}` : Prisma.sql``;
 
@@ -588,13 +540,14 @@ export const getModelsRaw = async ({
       m."name",
       ${ifDetails`
         m."description",
-        m."poi",
         m."allowNoCredit",
         m."allowCommercialUse",
         m."allowDerivatives",
         m."allowDifferentLicense",
       `}
       m."type",
+      m."minor",
+      m."poi",
       m."nsfw",
       m."nsfwLevel",
       m."status",
@@ -614,40 +567,6 @@ export const getModelsRaw = async ({
         'collectedCount', mm."collectedCount",
         'tippedAmountCount', mm."tippedAmountCount"
       ) as "rank",
-      (
-        SELECT COALESCE(jsonb_agg(jsonb_build_object(
-          'tagId', "tagId",
-          'name', t."name"
-          )
-        ), '[]'::jsonb) FROM "TagsOnModels"
-            JOIN "Tag" t ON "tagId" = t."id"
-            WHERE "modelId" = m."id"
-            AND "tagId" IS NOT NULL
-      ) as "tagsOnModels",
-      (
-        SELECT COALESCE(jsonb_agg(jsonb_build_object('hash', "hash")), '[]'::jsonb) FROM "ModelHash"
-            WHERE "modelId" = m."id"
-            AND "modelId" IS NOT NULL
-            AND "hashType" = 'SHA256'
-            AND "fileType" IN ('Model', 'Pruned Model')
-        AND "hash" IS NOT NULL
-      ) as "hashes",
-      ${
-        includeDetails
-          ? Prisma.sql`(
-            SELECT jsonb_agg(data)
-              FROM (
-                SELECT row_to_json(mvd) as data
-                FROM "CTE_ModelVersionDetails" mvd
-                WHERE mvd."modelId" = m.id
-                ORDER BY index
-              ) as t
-            ) as "modelVersions",`
-          : Prisma.sql`(
-            SELECT jsonb_agg(data)
-            FROM (SELECT row_to_json(lmv) AS data) as t
-            ) as "modelVersions",`
-      }
       jsonb_build_object(
         'id', u."id",
         'username', u."username",
@@ -659,13 +578,6 @@ export const getModelsRaw = async ({
     JOIN "ModelMetric" mm ON mm."modelId" = m."id" AND mm."timeframe" = ${period}::"MetricTimeframe"
     JOIN "User" u ON m."userId" = u.id
     ${clubId ? Prisma.sql`JOIN "clubModels" cm ON cm."modelId" = m."id"` : Prisma.sql``}
-    CROSS JOIN LATERAL (
-        SELECT *
-        FROM "CTE_ModelVersionDetails" mv
-        WHERE mv."modelId" = m.id
-        ORDER BY mv.index ASC
-        LIMIT 1
-    ) lmv -- LatestModelVersion
     WHERE ${Prisma.join(AND, ' AND ')}
     ORDER BY ${Prisma.raw(orderBy)}
     LIMIT ${(take ?? 100) + 1}
@@ -679,6 +591,14 @@ export const getModelsRaw = async ({
   const profilePictures = await getProfilePicturesForUsers(userIds);
   const userCosmetics = await getCosmeticsForUsers(userIds);
 
+  // Get versions, hash, and tags from cache
+  const modelIds = models.map((m) => m.id);
+  const modelData = await dataForModelsCache.fetch(modelIds);
+
+  const cosmetics = includeCosmetics
+    ? await getCosmeticsForEntity({ ids: models.map((m) => m.id), entity: 'Model' })
+    : {};
+
   let nextCursor: string | bigint | undefined;
   if (take && models.length > take) {
     const nextItem = models.pop();
@@ -686,25 +606,60 @@ export const getModelsRaw = async ({
   }
 
   return {
-    items: models.map(({ rank, modelVersions, cursorId, ...model }) => ({
-      ...model,
-      rank: {
-        [`downloadCount${input.period}`]: rank.downloadCount,
-        [`thumbsUpCount${input.period}`]: rank.thumbsUpCount,
-        [`thumbsDownCount${input.period}`]: rank.thumbsDownCount,
-        [`commentCount${input.period}`]: rank.commentCount,
-        [`ratingCount${input.period}`]: rank.ratingCount,
-        [`rating${input.period}`]: rank.rating,
-        [`collectedCount${input.period}`]: rank.collectedCount,
-        [`tippedAmountCount${input.period}`]: rank.tippedAmountCount,
-      },
-      modelVersions: (modelVersions ?? []).filter(isDefined),
-      user: {
-        ...model.user,
-        profilePicture: profilePictures?.[model.user.id] ?? null,
-        cosmetics: userCosmetics[model.user.id] ?? [],
-      },
-    })),
+    items: models
+      .map(({ rank, cursorId, ...model }) => {
+        const data = modelData[model.id.toString()];
+        if (!data) return null;
+
+        let modelVersions = data.versions;
+
+        // Apply version filters
+        if (!sessionUser?.isModerator || !status?.length) {
+          modelVersions = modelVersions.filter((mv) => mv.status === ModelStatus.Published);
+        }
+
+        if (baseModels) {
+          modelVersions = modelVersions.filter((mv) => baseModels.includes(mv.baseModel));
+        }
+
+        if (!!modelVersionIds?.length) {
+          modelVersions = modelVersions.filter((mv) => modelVersionIds.includes(mv.id));
+        }
+
+        if (hidePrivateModels) {
+          modelVersions = modelVersions.filter((mv) => mv.availability === 'Public');
+        }
+
+        // eject if no versions
+        if (modelVersions.length === 0) return null;
+
+        // If not getting full details, only return the latest version
+        if (!includeDetails) modelVersions = modelVersions.slice(0, 1);
+
+        return {
+          ...model,
+          rank: {
+            [`downloadCount${input.period}`]: rank.downloadCount,
+            [`thumbsUpCount${input.period}`]: rank.thumbsUpCount,
+            [`thumbsDownCount${input.period}`]: rank.thumbsDownCount,
+            [`commentCount${input.period}`]: rank.commentCount,
+            [`ratingCount${input.period}`]: rank.ratingCount,
+            [`rating${input.period}`]: rank.rating,
+            [`collectedCount${input.period}`]: rank.collectedCount,
+            [`tippedAmountCount${input.period}`]: rank.tippedAmountCount,
+          },
+          modelVersions,
+          hashes: data.hashes,
+          tagsOnModels: data.tags,
+          user: {
+            ...model.user,
+            profilePicture: profilePictures?.[model.user.id] ?? null,
+            cosmetics: userCosmetics[model.user.id] ?? [],
+          },
+          cosmetic: cosmetics[model.id] ?? null,
+        };
+      })
+      .filter(isDefined),
     nextCursor,
     isPrivate,
   };
@@ -994,7 +949,6 @@ export const getModelsWithImagesAndModelVersions = async ({
   user?: SessionUser;
 }) => {
   input.limit = input.limit ?? 100;
-  const take = input.limit + 1;
 
   let modelVersionWhere: Prisma.ModelVersionWhereInput | undefined = {};
 
@@ -1011,8 +965,9 @@ export const getModelsWithImagesAndModelVersions = async ({
   }
 
   const { items, isPrivate, nextCursor } = await getModelsRaw({
-    input: { ...input, take },
+    input: { ...input, take: input.limit },
     user,
+    include: ['cosmetics'],
   });
 
   const modelVersionIds = items
@@ -1020,9 +975,31 @@ export const getModelsWithImagesAndModelVersions = async ({
     .flatMap((m) => m.modelVersions)
     .map((m) => m.id);
 
-  const modelVersionImages = !!modelVersionIds.length
-    ? await getImagesForModelVersionCache(modelVersionIds)
-    : {};
+  let modelVersionImages: Record<
+    number,
+    { modelVersionId: number; images: ImagesForModelVersions[] }
+  > = {};
+  if (!!modelVersionIds.length) {
+    if (input.pending) {
+      const images = await getImagesForModelVersion({
+        modelVersionIds,
+        imagesPerVersion: 20,
+        pending: input.pending,
+        browsingLevel: input.browsingLevel,
+        user,
+      });
+      for (const image of images) {
+        if (!modelVersionImages[image.modelVersionId])
+          modelVersionImages[image.modelVersionId] = {
+            modelVersionId: image.modelVersionId,
+            images: [],
+          };
+        modelVersionImages[image.modelVersionId].images.push(image);
+      }
+    } else {
+      modelVersionImages = await getImagesForModelVersionCache(modelVersionIds);
+    }
+  }
 
   const { excludedTagIds, status } = input;
   const includeDrafts = status?.includes(ModelStatus.Draft);
@@ -1052,7 +1029,7 @@ export const getModelsWithImagesAndModelVersions = async ({
         return {
           ...model,
           tags: tagsOnModels.map((x) => x.tagId), // not sure why we even use scoring here...
-          hashes: hashes.map((hash) => hash.hash.toLowerCase()),
+          hashes: hashes.map((hash) => hash.toLowerCase()),
           rank: {
             downloadCount: rank?.[`downloadCount${input.period}`] ?? 0,
             thumbsUpCount: rank?.[`thumbsUpCount${input.period}`] ?? 0,
@@ -1140,24 +1117,26 @@ export const deleteModelById = async ({
     if (!model) return null;
 
     // TODO - account for case that a user restores a model and doesn't want all posts to be re-published
-    await tx.$executeRaw`
-      UPDATE "Post"
-      SET "metadata" = "metadata" || jsonb_build_object(
-        'unpublishedAt', ${new Date().toISOString()},
-        'unpublishedBy', ${userId}
-      )
-      WHERE "publishedAt" IS NOT NULL
-      AND "userId" = ${model.userId}
-      AND "modelVersionId" IN (${Prisma.join(
-        model.modelVersions.map(({ id }) => id),
-        ','
-      )})
-    `;
-
-    await modelsSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Delete }]);
+    const versionIds = model.modelVersions.map(({ id }) => id);
+    if (versionIds.length > 0)
+      await tx.$executeRaw`
+        UPDATE "Post"
+        SET "metadata" = "metadata" || jsonb_build_object(
+          'unpublishedAt', ${new Date().toISOString()},
+          'unpublishedBy', ${userId}
+        )
+        WHERE "publishedAt" IS NOT NULL
+        AND "userId" = ${model.userId}
+        AND "modelVersionId" IN (${Prisma.join(
+          model.modelVersions.map(({ id }) => id),
+          ','
+        )})
+      `;
 
     return model;
   });
+
+  await modelsSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Delete }]);
 
   return deletedModel;
 };
@@ -1199,6 +1178,8 @@ export const permaDeleteModelById = async ({
     return deletedModel;
   });
 
+  await modelsSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Delete }]);
+
   return deletedModel;
 };
 
@@ -1235,16 +1216,27 @@ const prepareModelVersions = (versions: ModelInput['modelVersions']) => {
   });
 };
 
-export const upsertModel = async ({
-  id,
-  tagsOnModels,
-  userId,
-  templateId,
-  bountyId,
-  meta,
-  ...data
-}: // TODO.manuel: hardcoding meta type since it causes type issues in lots of places if we set it in the schema
-ModelUpsertInput & { userId: number; meta?: Prisma.ModelCreateInput['meta'] }) => {
+export const upsertModel = async (
+  input: ModelUpsertInput & {
+    userId: number;
+    meta?: Prisma.ModelCreateInput['meta']; // TODO.manuel: hardcoding meta type since it causes type issues in lots of places if we set it in the schema
+    isModerator?: boolean;
+  }
+) => {
+  if (!input.isModerator) {
+    for (const key of input.lockedProperties ?? []) delete input[key as keyof typeof input];
+  }
+
+  const { id, tagsOnModels, userId, templateId, bountyId, meta, isModerator, ...data } = input;
+
+  // don't allow updating of locked properties
+  if (!isModerator) {
+    const lockedProperties = data.lockedProperties ?? [];
+    for (const prop of lockedProperties) {
+      const key = prop as keyof typeof data;
+      if (data[key] !== undefined) delete data[key];
+    }
+  }
   if (!id || templateId) {
     const result = await dbWrite.model.create({
       select: { id: true, nsfwLevel: true },
@@ -1280,11 +1272,15 @@ ModelUpsertInput & { userId: number; meta?: Prisma.ModelCreateInput['meta'] }) =
   } else {
     const beforeUpdate = await dbRead.model.findUnique({
       where: { id },
-      select: { poi: true },
+      select: { poi: true, userId: true, minor: true },
     });
+    if (!beforeUpdate) return null;
+
+    const isOwner = beforeUpdate.userId === userId || isModerator;
+    if (!isOwner) return null;
 
     const result = await dbWrite.model.update({
-      select: { id: true, nsfwLevel: true, poi: true },
+      select: { id: true, nsfwLevel: true, poi: true, minor: true },
       where: { id },
       data: {
         ...data,
@@ -1321,8 +1317,11 @@ ModelUpsertInput & { userId: number; meta?: Prisma.ModelCreateInput['meta'] }) =
     const poiChanged = beforeUpdate && result.poi !== beforeUpdate.poi;
     // A trigger now handles updating images to reflect the poi setting. We don't need to do it here.
 
+    // Handle Minor change
+    const minorChanged = beforeUpdate && result.minor !== beforeUpdate.minor;
+
     // Update search index if listing changes
-    if (tagsOnModels || poiChanged) {
+    if (tagsOnModels || poiChanged || minorChanged) {
       await modelsSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Update }]);
     }
 
@@ -1353,6 +1352,7 @@ export const publishModelById = async ({
           status,
           publishedAt: !republishing ? publishedAt : undefined,
           meta: isEmpty(meta) ? Prisma.JsonNull : meta,
+          deletedAt: null,
           modelVersions: includeVersions
             ? {
                 updateMany: {
@@ -1375,8 +1375,12 @@ export const publishModelById = async ({
         await tx.$executeRaw`
           UPDATE "Post"
           SET
-            "metadata" = "metadata" - 'unpublishedAt' - 'unpublishedBy',
-            "publishedAt" = ${publishedAt}
+            "publishedAt" = CASE
+              WHEN "metadata"->>'prevPublishedAt' IS NOT NULL
+              THEN to_timestamp("metadata"->>'prevPublishedAt', 'YYYY-MM-DD"T"HH24:MI:SS.MS')
+              ELSE ${publishedAt}
+            END,
+            "metadata" = "metadata" - 'unpublishedAt' - 'unpublishedBy' - 'prevPublishedAt'
           WHERE "userId" = ${model.userId}
           AND "modelVersionId" IN (${Prisma.join(versionIds, ',')})
         `;
@@ -1391,9 +1395,7 @@ export const publishModelById = async ({
   if (includeVersions && status !== ModelStatus.Scheduled) {
     // Send to orchestrator
     Promise.all(
-      model.modelVersions.map((version) =>
-        prepareModelInOrchestrator({ id: version.id, baseModel: version.baseModel })
-      )
+      model.modelVersions.map((version) => prepareModelInOrchestrator({ id: version.id }))
     );
   }
 
@@ -1462,7 +1464,8 @@ export const unpublishModelById = async ({
         SET
           "metadata" = "metadata" || jsonb_build_object(
             'unpublishedAt', ${unpublishedAt},
-            'unpublishedBy', ${user.id}
+            'unpublishedBy', ${user.id},
+            'prevPublishedAt', "publishedAt"
           ),
           "publishedAt" = NULL
         WHERE "publishedAt" IS NOT NULL
@@ -1540,7 +1543,7 @@ export const getDraftModelsByUserId = async <TSelect extends Prisma.ModelSelect>
   return getPagingData({ items, count }, take, page);
 };
 
-export const getTrainingModelsByUserId = async <TSelect extends Prisma.ModelSelect>({
+export const getTrainingModelsByUserId = async <TSelect extends Prisma.ModelVersionSelect>({
   userId,
   select,
   page,
@@ -1550,20 +1553,23 @@ export const getTrainingModelsByUserId = async <TSelect extends Prisma.ModelSele
   select: TSelect;
 }) => {
   const { take, skip } = getPagination(limit, page);
-  const where: Prisma.ModelFindManyArgs['where'] = {
-    userId,
-    status: { notIn: [ModelStatus.Published, ModelStatus.Deleted] },
-    uploadType: { equals: ModelUploadType.Trained },
+  const where: Prisma.ModelVersionFindManyArgs['where'] = {
+    status: { in: [ModelStatus.Draft, ModelStatus.Training] },
+    model: {
+      userId,
+      status: { notIn: [ModelStatus.Deleted] },
+      uploadType: { equals: ModelUploadType.Trained },
+    },
   };
 
-  const items = await dbRead.model.findMany({
+  const items = await dbRead.modelVersion.findMany({
     select,
     skip,
     take,
     where,
     orderBy: { updatedAt: 'desc' },
   });
-  const count = await dbRead.model.count({ where });
+  const count = await dbRead.modelVersion.count({ where });
 
   return getPagingData({ items, count }, take, page);
 };
@@ -1854,7 +1860,7 @@ export const getGalleryHiddenPreferences = async ({
 }: {
   settings: ModelGallerySettingsSchema;
 }) => {
-  const { tags, users, images, level } = settings;
+  const { tags, users, images, level, pinnedPosts } = settings;
   const hiddenTags =
     tags && tags.length
       ? await dbRead.tag.findMany({
@@ -1876,6 +1882,7 @@ export const getGalleryHiddenPreferences = async ({
     hiddenUsers,
     hiddenImages: images ?? [],
     level: level ?? allBrowsingLevelsFlag,
+    pinnedPosts: pinnedPosts ?? {},
   };
 };
 

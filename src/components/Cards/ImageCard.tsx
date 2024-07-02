@@ -21,6 +21,9 @@ import { truncate } from 'lodash-es';
 import { ImageGuard2 } from '~/components/ImageGuard/ImageGuard2';
 import { ImageContextMenu } from '~/components/Image/ContextMenu/ImageContextMenu';
 import { ImagesInfiniteModel } from '~/server/services/image.service';
+import { ImageMetaPopover2 } from '~/components/Image/Meta/ImageMetaPopover';
+import { VideoMetadata } from '~/server/schema/media.schema';
+import { shouldAnimateByDefault } from '~/components/EdgeMedia/EdgeMedia.util';
 
 function UnroutedImageCard({ data }: Props) {
   const { classes: sharedClasses, cx } = useCardStyles({
@@ -44,7 +47,7 @@ function UnroutedImageCard({ data }: Props) {
 
   return (
     <HolidayFrame {...cardDecoration}>
-      <FeedCard className={sharedClasses.link}>
+      <FeedCard className={sharedClasses.link} frameDecoration={data.cosmetic}>
         <div className={sharedClasses.root}>
           <ImageGuard2 image={data}>
             {(safe) => (
@@ -54,14 +57,14 @@ function UnroutedImageCard({ data }: Props) {
                   position="apart"
                   align="start"
                   spacing={4}
-                  className="absolute top-2 left-2 right-2 z-10"
+                  className="absolute inset-x-2 top-2 z-10"
                   style={{ pointerEvents: 'none' }}
                 >
                   <ImageGuard2.BlurToggle radius="xl" h={26} sx={{ pointerEvents: 'auto' }} />
                   {safe && (
                     <Stack spacing="xs" ml="auto" style={{ pointerEvents: 'auto' }}>
                       <ImageContextMenu image={data} />
-                      {features.imageGeneration && data.meta && (
+                      {features.imageGeneration && data.meta && !data.hideMeta && (
                         <HoverActionButton
                           label="Remix"
                           size={30}
@@ -84,21 +87,27 @@ function UnroutedImageCard({ data }: Props) {
                   )}
                 </Group>
                 {safe ? (
-                  <EdgeMedia
-                    src={data.url}
-                    name={data.name ?? data.id.toString()}
-                    alt={
-                      data.meta
-                        ? truncate(data.meta.prompt, { length: constants.altTruncateLength })
-                        : data.name ?? undefined
-                    }
-                    type={data.type}
-                    width={imageWidth}
-                    className={sharedClasses.image}
-                    wrapperProps={{ style: { height: '100%', width: '100%' } }}
-                    loading="lazy"
-                    contain
-                  />
+                  <div
+                    className={data.cosmetic ? sharedClasses.frameAdjustment : undefined}
+                    style={{ height: '100%' }}
+                  >
+                    <EdgeMedia
+                      src={data.url}
+                      name={data.name ?? data.id.toString()}
+                      alt={
+                        data.meta
+                          ? truncate(data.meta.prompt, { length: constants.altTruncateLength })
+                          : data.name ?? undefined
+                      }
+                      type={data.type}
+                      width={imageWidth}
+                      className={sharedClasses.image}
+                      wrapperProps={{ style: { height: '100%', width: '100%' } }}
+                      anim={shouldAnimateByDefault(data)}
+                      loading="lazy"
+                      contain
+                    />
+                  </div>
                 ) : (
                   <MediaHash {...data} />
                 )}
@@ -107,12 +116,7 @@ function UnroutedImageCard({ data }: Props) {
           </ImageGuard2>
 
           <Stack
-            className={cx(
-              'footer',
-              sharedClasses.contentOverlay,
-              sharedClasses.bottom,
-              sharedClasses.gradientOverlay
-            )}
+            className={cx('footer', sharedClasses.contentOverlay, sharedClasses.bottom)}
             spacing="sm"
           >
             {data.user.id !== -1 && (
@@ -128,7 +132,7 @@ function UnroutedImageCard({ data }: Props) {
                 <UserAvatar
                   // Explicit casting to comply with ts
                   user={data.user as ImagesInfiniteModel['user']}
-                  avatarProps={{ radius: 'md', size: 32 }}
+                  avatarProps={{ radius: 'xl', size: 32 }}
                   withUsername
                 />
               </UnstyledButton>
@@ -149,13 +153,8 @@ function UnroutedImageCard({ data }: Props) {
                 }}
                 targetUserId={data.user.id}
               />
-              {!data.hideMeta && data.meta && (
-                <ImageMetaPopover
-                  meta={data.meta}
-                  generationProcess={data.generationProcess ?? undefined}
-                  imageId={data.id}
-                  mainResourceId={data.modelVersionId ?? undefined}
-                >
+              {data.hasMeta && data.meta && (
+                <ImageMetaPopover meta={data.meta}>
                   <ActionIcon className={sharedClasses.infoChip} variant="light">
                     <IconInfoCircle color="white" strokeWidth={2.5} size={18} />
                   </ActionIcon>

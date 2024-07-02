@@ -5,7 +5,7 @@ import {
   nsfwBrowsingLevelsFlag,
   publicBrowsingLevelsFlag,
 } from '~/shared/constants/browsingLevel.constants';
-import { MetricTimeframe } from '@prisma/client';
+import { MediaType, MetricTimeframe } from '@prisma/client';
 import { TRPCError } from '@trpc/server';
 import { getHTTPStatusCodeFromError } from '@trpc/server/http';
 import { NextApiRequest, NextApiResponse } from 'next';
@@ -20,7 +20,13 @@ import { getAllImages } from '~/server/services/image.service';
 import { PublicEndpoint } from '~/server/utils/endpoint-helpers';
 import { getPagination } from '~/server/utils/pagination-helpers';
 import { QS } from '~/utils/qs';
-import { booleanString, commaDelimitedNumberArray, numericString } from '~/utils/zod-helpers';
+import {
+  booleanString,
+  commaDelimitedEnumArray,
+  commaDelimitedNumberArray,
+  numericString,
+} from '~/utils/zod-helpers';
+import dayjs from 'dayjs';
 
 export const config = {
   api: {
@@ -49,7 +55,16 @@ const imagesEndpointSchema = z.object({
     }),
   browsingLevel: z.coerce.number().optional(),
   tags: commaDelimitedNumberArray({ message: 'tags should be a number array' }).optional(),
-  cursor: numericString().optional(),
+  cursor: z
+    .union([z.bigint(), z.number(), z.string(), z.date()])
+    .transform((val) =>
+      typeof val === 'string' && dayjs(val, 'YYYY-MM-DDTHH:mm:ss.SSS[Z]', true).isValid()
+        ? new Date(val)
+        : val
+    )
+    .optional(),
+  type: z.nativeEnum(MediaType).optional(),
+  baseModels: commaDelimitedEnumArray(z.enum(constants.baseModels)).optional(),
 });
 
 export default PublicEndpoint(async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -58,7 +73,7 @@ export default PublicEndpoint(async function handler(req: NextApiRequest, res: N
     if (!reqParams.success) return res.status(400).json({ error: reqParams.error });
 
     // Handle pagination
-    const { limit, page, cursor, nsfw, browsingLevel, ...data } = reqParams.data;
+    const { limit, page, cursor, nsfw, browsingLevel, type, ...data } = reqParams.data;
     let skip: number | undefined;
     const usingPaging = page && !cursor;
     if (usingPaging) {
@@ -71,10 +86,10 @@ export default PublicEndpoint(async function handler(req: NextApiRequest, res: N
     }
 
     const _browsingLevel = browsingLevel ?? nsfw ?? publicBrowsingLevelsFlag;
-    console.log({ _browsingLevel });
 
     const { items, nextCursor } = await getAllImages({
       ...data,
+      types: type ? [type] : undefined,
       limit,
       skip,
       cursor,
@@ -118,6 +133,7 @@ export default PublicEndpoint(async function handler(req: NextApiRequest, res: N
           },
           meta: image.meta,
           username: image.user.username,
+          baseModel: image.baseModel,
         };
       }),
       metadata,

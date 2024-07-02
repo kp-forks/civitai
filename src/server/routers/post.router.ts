@@ -1,3 +1,4 @@
+import { getPostEditDetail, getPostEditImages } from './../services/post.service';
 import { applyUserPreferences, cacheIt } from './../middleware.trpc';
 import { getByIdSchema } from './../schema/base.schema';
 import { guardedProcedure, publicProcedure } from './../trpc';
@@ -10,11 +11,11 @@ import {
   deletePostHandler,
   addPostTagHandler,
   removePostTagHandler,
-  getPostEditHandler,
   updatePostImageHandler,
   getPostTagsHandler,
   getPostsInfiniteHandler,
   getPostResourcesHandler,
+  getPostContestCollectionDetailsHandler,
 } from './../controllers/post.controller';
 import {
   postCreateSchema,
@@ -80,7 +81,9 @@ export const postRouter = router({
     .use(applyUserPreferences)
     .query(getPostsInfiniteHandler),
   get: publicProcedure.input(getByIdSchema).query(getPostHandler),
-  getEdit: protectedProcedure.input(getByIdSchema).query(getPostEditHandler),
+  getEdit: protectedProcedure
+    .input(getByIdSchema)
+    .query(({ ctx, input }) => getPostEditDetail({ ...input, user: ctx.user })),
   create: guardedProcedure.input(postCreateSchema).mutation(createPostHandler),
   update: guardedProcedure
     .input(postUpdateSchema)
@@ -115,4 +118,7 @@ export const postRouter = router({
     .use(isOwnerOrModerator)
     .mutation(removePostTagHandler),
   getResources: publicProcedure.input(getByIdSchema).query(getPostResourcesHandler),
+  getContestCollectionDetails: publicProcedure
+    .input(getByIdSchema)
+    .query(getPostContestCollectionDetailsHandler),
 });

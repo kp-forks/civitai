@@ -9,6 +9,7 @@ import {
   Group,
   Indicator,
   Popover,
+  ScrollArea,
   Stack,
 } from '@mantine/core';
 import { MediaType, MetricTimeframe } from '@prisma/client';
@@ -22,6 +23,11 @@ import { useFiltersContext } from '~/providers/FiltersProvider';
 import { GetInfiniteImagesInput } from '~/server/schema/image.schema';
 import { getDisplayName } from '~/utils/string-helpers';
 import { containerQuery } from '~/utils/mantine-css-helpers';
+import { ToolMultiSelect, ToolSelect } from '~/components/Tool/ToolMultiSelect';
+import { TechniqueMultiSelect } from '~/components/Technique/TechniqueMultiSelect';
+import { activeBaseModels, BaseModel } from '~/server/common/constants'; // Add this import
+import { useRouter } from 'next/router';
+import { useImageQueryParams } from '~/components/Image/image.utils';
 
 // TODO: adjust filter as we begin to support more media types
 const availableMediaTypes = Object.values(MediaType).filter(
@@ -72,6 +78,17 @@ export function ImageFiltersDropdown({
   const isClient = useIsClient();
   const currentUser = useCurrentUser();
   const isModerator = currentUser?.isModerator;
+  const router = useRouter();
+  const imageParams = useImageQueryParams();
+
+  function handleToolChange(value: number) {
+    if (!value) {
+      const { tools, ...query } = router.query;
+      router.replace({ query }, undefined, { shallow: true });
+    } else {
+      router.replace({ query: { ...router.query, tools: value } }, undefined, { shallow: true });
+    }
+  }
 
   const [opened, setOpened] = useState(false);
 
@@ -86,10 +103,12 @@ export function ImageFiltersDropdown({
     (mergedFilters.types?.length ?? 0) +
     (mergedFilters.withMeta ? 1 : 0) +
     (mergedFilters.hidden ? 1 : 0) +
-    (mergedFilters.followed ? 1 : 0) +
     (mergedFilters.fromPlatform ? 1 : 0) +
     (mergedFilters.notPublished ? 1 : 0) +
-    (mergedFilters.period && mergedFilters.period !== MetricTimeframe.AllTime ? 1 : 0);
+    (!!mergedFilters.tools?.length ? 1 : 0) +
+    (!!mergedFilters.techniques?.length ? 1 : 0) +
+    (mergedFilters.period && mergedFilters.period !== MetricTimeframe.AllTime ? 1 : 0) +
+    (mergedFilters.baseModels?.length ?? 0);
 
   const clearFilters = useCallback(() => {
     const reset = {
@@ -99,7 +118,9 @@ export function ImageFiltersDropdown({
       followed: false,
       fromPlatform: false,
       notPublished: false,
+      tools: [],
       period: MetricTimeframe.AllTime,
+      baseModels: undefined,
     };
 
     if (onChange) onChange(reset);
@@ -112,6 +133,10 @@ export function ImageFiltersDropdown({
     variant: 'filled',
     classNames: classes,
     tt: 'capitalize',
+  };
+
+  const handleChange: Props['onChange'] = (value) => {
+    onChange ? onChange(value) : setFilters(value);
   };
 
   const target = (
@@ -159,13 +184,27 @@ export function ImageFiltersDropdown({
         )}
       </Stack>
       <Stack spacing="md">
+        <Divider label="Base model" labelProps={{ weight: 'bold', size: 'sm' }} />
+        <Chip.Group
+          spacing={8}
+          value={mergedFilters.baseModels ?? []}
+          onChange={(baseModels: BaseModel[]) => handleChange({ baseModels })}
+          multiple
+          my={4}
+        >
+          {activeBaseModels.map((baseModel, index) => (
+            <Chip key={index} value={baseModel} {...chipProps}>
+              {baseModel}
+            </Chip>
+          ))}
+        </Chip.Group>
+      </Stack>
+      <Stack spacing="md">
         <Divider label="Media type" labelProps={{ weight: 'bold', size: 'sm' }} />
         <Chip.Group
           spacing={8}
           value={mergedFilters.types ?? []}
-          onChange={(types: MediaType[]) =>
-            onChange ? onChange({ types }) : setFilters({ types })
-          }
+          onChange={(types: MediaType[]) => handleChange({ types })}
           multiple
         >
           {availableMediaTypes.map((type, index) => (
@@ -179,9 +218,7 @@ export function ImageFiltersDropdown({
           <Chip
             {...chipProps}
             checked={mergedFilters.withMeta}
-            onChange={(checked) =>
-              onChange ? onChange({ withMeta: checked }) : setFilters({ withMeta: checked })
-            }
+            onChange={(checked) => handleChange({ withMeta: checked })}
           >
             Metadata only
           </Chip>
@@ -190,29 +227,16 @@ export function ImageFiltersDropdown({
               <Chip
                 {...chipProps}
                 checked={mergedFilters.hidden}
-                onChange={(checked) =>
-                  onChange ? onChange({ hidden: checked }) : setFilters({ hidden: checked })
-                }
+                onChange={(checked) => handleChange({ hidden: checked })}
               >
                 Hidden
-              </Chip>
-              <Chip
-                {...chipProps}
-                checked={mergedFilters.followed}
-                onChange={(checked) =>
-                  onChange ? onChange({ followed: checked }) : setFilters({ followed: checked })
-                }
-              >
-                Followed Only
               </Chip>
             </>
           )}
           <Chip
             {...chipProps}
             checked={mergedFilters.fromPlatform}
-            onChange={(checked) =>
-              onChange ? onChange({ fromPlatform: checked }) : setFilters({ fromPlatform: checked })
-            }
+            onChange={(checked) => handleChange({ fromPlatform: checked })}
           >
             Made On-site
           </Chip>
@@ -220,16 +244,26 @@ export function ImageFiltersDropdown({
             <Chip
               {...chipProps}
               checked={mergedFilters.notPublished}
-              onChange={(checked) =>
-                onChange
-                  ? onChange({ notPublished: checked })
-                  : setFilters({ notPublished: checked })
-              }
+              onChange={(checked) => handleChange({ notPublished: checked })}
             >
               Not Published
             </Chip>
           )}
         </Group>
+
+        <Divider label="Tools" labelProps={{ weight: 'bold', size: 'sm' }} />
+        <ToolSelect
+          value={(imageParams.query.tools ?? [])[0]}
+          onChange={(toolId) => handleToolChange(toolId)}
+          placeholder="Created with..."
+        />
+
+        <Divider label="Techniques" labelProps={{ weight: 'bold', size: 'sm' }} />
+        <TechniqueMultiSelect
+          value={mergedFilters.techniques ?? []}
+          onChange={(techniques) => handleChange({ techniques })}
+          placeholder="Created with..."
+        />
       </Stack>
       {filterLength > 0 && (
         <Button
@@ -277,10 +311,16 @@ export function ImageFiltersDropdown({
       radius={12}
       onClose={() => setOpened(false)}
       middlewares={{ flip: true, shift: true }}
+      withinPortal
     >
       <Popover.Target>{target}</Popover.Target>
-      <Popover.Dropdown maw={468} p="md" w="100%">
-        {dropdown}
+      <Popover.Dropdown maw={468} w="100%">
+        <ScrollArea.Autosize
+          type="hover"
+          maxHeight={'calc(90vh - var(--mantine-header-height) - 56px)'}
+        >
+          {dropdown}
+        </ScrollArea.Autosize>
       </Popover.Dropdown>
     </Popover>
   );

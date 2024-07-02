@@ -1,18 +1,17 @@
-import { Session } from 'next-auth';
-import { SessionUser } from 'next-auth';
+import { Session, SessionUser } from 'next-auth';
 import { signIn, useSession } from 'next-auth/react';
-import { createContext, useContext, useMemo, useEffect, useRef, useState } from 'react';
-import { onboardingSteps } from '~/components/Onboarding/onboarding.utils';
-import { Flags } from '~/shared/utils';
-import { dialogStore } from '~/components/Dialog/dialogStore';
 import dynamic from 'next/dynamic';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useBrowsingModeContext } from '~/components/BrowsingLevel/BrowsingLevelProvider';
+import { dialogStore } from '~/components/Dialog/dialogStore';
+import { onboardingSteps } from '~/components/Onboarding/onboarding.utils';
 import { nsfwBrowsingLevelsFlag } from '~/shared/constants/browsingLevel.constants';
+import { Flags } from '~/shared/utils';
+
 const OnboardingModal = dynamic(() => import('~/components/Onboarding/OnboardingWizard'));
 
 export function CivitaiSessionProvider({ children }: { children: React.ReactNode }) {
   const { data, update } = useSession();
-
   const { useStore } = useBrowsingModeContext();
   const browsingModeState = useStore((state) => state);
 

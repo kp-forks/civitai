@@ -1,4 +1,4 @@
-import { Stack, Group, Text, Loader, Center, Divider } from '@mantine/core';
+import { Stack, Text, Loader, Center, Divider } from '@mantine/core';
 import {
   RootThreadProvider,
   CreateComment,
@@ -41,25 +41,19 @@ export function ImageDetailComments({ imageId, userId }: ImageDetailCommentsProp
               </Stack>
             )}
             <Stack className={activeComment ? classes.rootCommentReplyInset : undefined}>
-              <CreateComment key={activeComment?.id} />
+              <CreateComment key={activeComment?.id} borderless />
               {data?.map((comment) => (
-                <Comment key={comment.id} comment={comment} />
+                <Comment key={comment.id} comment={comment} borderless />
               ))}
               {!!remaining && !showMore && (
-                <Divider
-                  label={
-                    <Group spacing="xs" align="center">
-                      <Text variant="link" sx={{ cursor: 'pointer' }} onClick={toggleShowMore}>
-                        Show {remaining} More
-                      </Text>
-                    </Group>
-                  }
-                  labelPosition="center"
-                  variant="dashed"
-                />
+                <div className="flex justify-center">
+                  <Text variant="link" className="cursor-pointer text-sm" onClick={toggleShowMore}>
+                    Show {remaining} More
+                  </Text>
+                </div>
               )}
               {created.map((comment) => (
-                <Comment key={comment.id} comment={comment} />
+                <Comment key={comment.id} comment={comment} borderless />
               ))}
             </Stack>
           </Stack>

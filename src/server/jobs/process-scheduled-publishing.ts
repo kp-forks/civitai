@@ -2,10 +2,14 @@ import { Prisma } from '@prisma/client';
 import { createJob, getJobDate } from './job';
 import { dbWrite } from '~/server/db/client';
 import { eventEngine } from '~/server/events';
+import orchestratorCaller from '~/server/http/orchestrator/orchestrator.caller';
+import { dataForModelsCache } from '~/server/redis/caches';
+import { isDefined } from '~/utils/type-guards';
 
 type ScheduledEntity = {
   id: number;
   userId: number;
+  extras?: { modelId: number } & MixedObject;
 };
 
 export const processScheduledPublishing = createJob(
@@ -26,7 +30,10 @@ export const processScheduledPublishing = createJob(
     const scheduledModelVersions = await dbWrite.$queryRaw<ScheduledEntity[]>`
       SELECT
         mv.id,
-        m."userId"
+        m."userId",
+        JSON_BUILD_OBJECT(
+          'modelId', m.id
+        ) as "extras"
       FROM "ModelVersion" mv
       JOIN "Model" m ON m.id = mv."modelId"
       WHERE mv.status = 'Scheduled' AND mv."publishedAt" <= ${now};
@@ -39,7 +46,7 @@ export const processScheduledPublishing = createJob(
       JOIN "ModelVersion" mv ON mv.id = p."modelVersionId"
       JOIN "Model" m ON m.id = mv."modelId"
       WHERE
-        (p."publishedAt" IS NULL OR p.metadata->>'unpublishedAt' IS NOT NULL)
+        (p."publishedAt" IS NULL)
       AND mv.status = 'Scheduled' AND mv."publishedAt" <=  ${now};
     `;
 
@@ -75,7 +82,7 @@ export const processScheduledPublishing = createJob(
         FROM "ModelVersion" mv
         JOIN "Model" m ON m.id = mv."modelId"
         WHERE p.id IN (${Prisma.join(scheduledPostIds)})
-          AND (p."publishedAt" IS NULL OR p.metadata->>'unpublishedAt' IS NOT NULL)
+          AND (p."publishedAt" IS NULL)
           AND mv.id = p."modelVersionId" AND m."userId" = p."userId"
           AND mv.status = 'Scheduled' AND mv."publishedAt" <=  ${now};
       `);
@@ -109,6 +116,7 @@ export const processScheduledPublishing = createJob(
         entityType: 'modelVersion',
         entityId: modelVersion.id,
       });
+      await orchestratorCaller.bustModelCache({ modelVersionId: modelVersion.id });
     }
     for (const post of scheduledPosts) {
       await eventEngine.processEngagement({
@@ -118,6 +126,11 @@ export const processScheduledPublishing = createJob(
         entityId: post.id,
       });
     }
+
+    const processedModelIds = scheduledModelVersions
+      .map((entity) => entity.extras?.modelId)
+      .filter(isDefined);
+    if (processedModelIds.length) await dataForModelsCache.bust(processedModelIds);
 
     await setLastRun();
   }

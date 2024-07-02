@@ -12,6 +12,9 @@ export type MyTrainingModelGetAll = ModelRouter['getMyTrainingModels'];
 export type ModelGetAllPagedSimple = ModelRouter['getAllPagedSimple'];
 export type ModelGetAssociatedResourcesSimple = ModelRouter['getAssociatedResourcesSimple'];
 
+type ModelVersionRouter = RouterOutput['modelVersion'];
+export type ModelVersionById = ModelVersionRouter['getById'];
+
 type CommentRouter = RouterOutput['comment'];
 export type CommentGetReactions = CommentRouter['getReactions'];
 export type CommentGetAll = CommentRouter['getAll'];
@@ -50,6 +53,7 @@ export type ResourceReviewGetById = ResourceReviewRouter['get'];
 
 type ArticleRouter = RouterOutput['article'];
 export type ArticleGetById = ArticleRouter['getById'];
+export type ArticleGetInfinite = ArticleRouter['getInfinite']['items'];
 
 type LeaderboardRouter = RouterOutput['leaderboard'];
 export type LeaderboardGetModel = LeaderboardRouter['getLeaderboard'][number];
@@ -112,3 +116,8 @@ export type PurchasableRewardGetPaged =
   RouterOutput['purchasableReward']['getPaged']['items'][number];
 
 export type VaultItemGetPaged = RouterOutput['vault']['getItemsPaged']['items'][number];
+export type CosmeticGetById = Exclude<RouterOutput['cosmetic']['getById'], null>;
+export type CosmeticShopItemGetById = RouterOutput['cosmeticShop']['getShopItemById'];
+export type CosmeticShopSectionGetById = RouterOutput['cosmeticShop']['getSectionById'];
+
+export type PostContestCollectionItem = RouterOutput['post']['getContestCollectionDetails'][number];

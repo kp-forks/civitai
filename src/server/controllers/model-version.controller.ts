@@ -1,21 +1,25 @@
 import { ModelStatus } from '@prisma/client';
 import { TRPCError } from '@trpc/server';
-
-import { BaseModel, BaseModelType, baseModelLicenses, constants } from '~/server/common/constants';
+import { BaseModel, baseModelLicenses, BaseModelType, constants } from '~/server/common/constants';
 import { Context } from '~/server/createContext';
 import { eventEngine } from '~/server/events';
+import { dataForModelsCache } from '~/server/redis/caches';
 import { GetByIdInput } from '~/server/schema/base.schema';
 import {
   EarlyAccessModelVersionsOnTimeframeSchema,
   GetModelVersionSchema,
   ModelVersionMeta,
-  ModelVersionUpsertInput,
   ModelVersionsGeneratedImagesOnTimeframeSchema,
+  ModelVersionUpsertInput,
   PublishVersionInput,
+  QueryModelVersionSchema,
   RecommendedSettingsSchema,
+  TrainingDetailsObj,
 } from '~/server/schema/model-version.schema';
 import { DeclineReviewSchema, UnpublishModelSchema } from '~/server/schema/model.schema';
 import { ModelFileModel } from '~/server/selectors/modelFile.selector';
+import { userWithCosmeticsSelect } from '~/server/selectors/user.selector';
+import { getStaticContent } from '~/server/services/content.service';
 import {
   addAdditionalLicensePermissions,
   deleteVersionById,
@@ -24,6 +28,7 @@ import {
   getVersionById,
   modelVersionGeneratedImagesOnTimeframe,
   publishModelVersionById,
+  queryModelVersions,
   toggleNotifyModelVersion,
   unpublishModelVersionById,
   upsertModelVersion,
@@ -37,11 +42,10 @@ import {
   throwDbError,
   throwNotFoundError,
 } from '~/server/utils/errorHandling';
-import { modelFileSelect } from '../selectors/modelFile.selector';
 import { dbRead } from '../db/client';
+import { modelFileSelect } from '../selectors/modelFile.selector';
 import { getFilesByEntity } from '../services/file.service';
 import { createFile } from '../services/model-file.service';
-import { getStaticContent } from '~/server/services/content.service';
 
 export const getModelVersionRunStrategiesHandler = ({ input: { id } }: { input: GetByIdInput }) => {
   try {
@@ -72,6 +76,8 @@ export const getModelVersionHandler = async ({ input }: { input: GetModelVersion
         status: true,
         createdAt: true,
         vaeId: true,
+        trainingDetails: true,
+        trainingStatus: true,
         model: {
           select: {
             id: true,
@@ -80,6 +86,7 @@ export const getModelVersionHandler = async ({ input }: { input: GetModelVersion
             status: true,
             publishedAt: true,
             nsfw: true,
+            uploadType: true,
             user: { select: { id: true } },
           },
         },
@@ -127,6 +134,7 @@ export const getModelVersionHandler = async ({ input }: { input: GetModelVersion
       ...version,
       baseModel: version.baseModel as BaseModel,
       baseModelType: version.baseModelType as BaseModelType,
+      trainingDetails: version.trainingDetails as TrainingDetailsObj | undefined,
       files: version.files as unknown as Array<
         Omit<ModelFileModel, 'metadata'> & { metadata: FileMetadata }
       >,
@@ -250,6 +258,8 @@ export const upsertModelVersionHandler = async ({
       }
     }
 
+    await dataForModelsCache.bust(version.modelId);
+
     return version;
   } catch (error) {
     if (error instanceof TRPCError) throw error;
@@ -267,6 +277,8 @@ export const deleteModelVersionHandler = async ({ input }: { input: GetByIdInput
       console.error(e);
     });
 
+    await dataForModelsCache.bust(version.modelId);
+
     return version;
   } catch (error) {
     if (error instanceof TRPCError) throw error;
@@ -282,7 +294,10 @@ export const publishModelVersionHandler = async ({
   ctx: DeepNonNullable<Context>;
 }) => {
   try {
-    const version = await getVersionById({ id: input.id, select: { meta: true, status: true } });
+    const version = await getVersionById({
+      id: input.id,
+      select: { meta: true, status: true, modelId: true },
+    });
     if (!version) throw throwNotFoundError(`No model version with id ${input.id}`);
 
     const versionMeta = version.meta as ModelVersionMeta | null;
@@ -316,6 +331,8 @@ export const publishModelVersionHandler = async ({
       });
     }
 
+    await dataForModelsCache.bust(version.modelId);
+
     return updatedVersion;
   } catch (error) {
     if (error instanceof TRPCError) throw error;
@@ -332,10 +349,10 @@ export const unpublishModelVersionHandler = async ({
 }) => {
   try {
     const { id } = input;
-    const modelVersion = await getVersionById({ id, select: { meta: true } });
-    if (!modelVersion) throw throwNotFoundError(`No model version with id ${input.id}`);
+    const version = await getVersionById({ id, select: { meta: true, modelId: true } });
+    if (!version) throw throwNotFoundError(`No model version with id ${input.id}`);
 
-    const meta = (modelVersion.meta as ModelVersionMeta | null) || {};
+    const meta = (version.meta as ModelVersionMeta | null) || {};
     const updatedVersion = await unpublishModelVersionById({ ...input, meta, user: ctx.user });
 
     // Send event in background
@@ -345,6 +362,8 @@ export const unpublishModelVersionHandler = async ({
       modelId: updatedVersion.model.id,
       nsfw: updatedVersion.model.nsfw,
     });
+
+    await dataForModelsCache.bust(version.modelId);
 
     return updatedVersion;
   } catch (error) {
@@ -536,4 +555,45 @@ export async function getVersionLicenseHandler({ input }: { input: GetByIdInput 
     if (error instanceof TRPCError) throw error;
     else throw throwDbError(error);
   }
+}
+
+export async function queryModelVersionsForModeratorHandler({
+  input,
+  ctx,
+}: {
+  input: QueryModelVersionSchema;
+  ctx: Context;
+}) {
+  const { nextCursor, items } = await queryModelVersions({
+    user: ctx.user,
+    query: input,
+    select: {
+      id: true,
+      name: true,
+      meta: true,
+      trainingStatus: true,
+      createdAt: true,
+      model: {
+        select: {
+          id: true,
+          name: true,
+          userId: true,
+        },
+      },
+    },
+  });
+
+  return {
+    nextCursor,
+    items: items as Array<Omit<(typeof items)[number], 'meta'> & { meta: ModelVersionMeta }>,
+  };
+}
+
+export async function getModelVersionOwnerHandler({ input }: { input: GetByIdInput }) {
+  const version = await getVersionById({
+    ...input,
+    select: { model: { select: { user: { select: userWithCosmeticsSelect } } } },
+  });
+  if (!version) throw throwNotFoundError();
+  return version.model.user;
 }

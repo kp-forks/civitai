@@ -1,4 +1,4 @@
-import { AutocompleteProps, createStyles, Group, Select, Text } from '@mantine/core';
+import { AutocompleteProps, createStyles, Group, Select, Stack, Text } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
 import { instantMeiliSearch } from '@meilisearch/instant-meilisearch';
 import { IconChevronDown } from '@tabler/icons-react';
@@ -158,6 +158,7 @@ export const QuickSearchDropdown = ({
     <InstantSearch
       searchClient={disableInitialSearch ? searchClient : meilisearch}
       indexName={searchIndexMap[targetIndex]}
+      future={{ preserveSharedStateOnUnmount: true }}
     >
       <Configure hitsPerPage={dropdownItemLimit} filters={filters} />
       {indexSupportsNsfwLevel && <BrowsingLevelFilter attributeName="nsfwLevel" />}
@@ -251,7 +252,9 @@ function QuickSearchDropdownContent<TIndex extends SearchIndexKey>({
         maxDropdownHeight={300}
         nothingFound={
           !hits.length ? (
-            <TimeoutLoader delay={1500} renderTimeout={() => <Text>No results found</Text>} />
+            <Stack spacing={0} align="center">
+              <TimeoutLoader delay={1500} renderTimeout={() => <Text>No results found</Text>} />
+            </Stack>
           ) : undefined
         }
         limit={

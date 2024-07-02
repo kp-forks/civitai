@@ -43,7 +43,7 @@ export const useQueryPosts = (
   filters ??= {};
   const browsingLevel = useBrowsingLevelDebounced();
   const { data, isLoading, ...rest } = trpc.post.getInfinite.useInfiniteQuery(
-    { ...filters, include: [], browsingLevel },
+    { ...filters, include: ['cosmetics'], browsingLevel },
     {
       getNextPageParam: (lastPage) => (!!lastPage ? lastPage.nextCursor : 0),
       getPreviousPageParam: (firstPage) => (!!firstPage ? firstPage.nextCursor : 0),
@@ -59,4 +59,21 @@ export const useQueryPosts = (
     isRefetching: rest.isRefetching,
   });
   return { data, posts, isLoading: isLoading || loadingPreferences, ...rest };
+};
+
+export const usePostContestCollectionDetails = (
+  filters: { id: number },
+  options?: { enabled: boolean }
+) => {
+  const { data: collectionItems = [], ...rest } = trpc.post.getContestCollectionDetails.useQuery(
+    { ...filters },
+    {
+      ...options,
+    }
+  );
+
+  return {
+    collectionItems,
+    ...rest,
+  };
 };

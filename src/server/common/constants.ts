@@ -1,3 +1,4 @@
+import { MantineTheme } from '@mantine/core';
 import {
   BountyType,
   Currency,
@@ -8,12 +9,13 @@ import {
   ModelVersionSponsorshipSettingsType,
   ReviewReactions,
 } from '@prisma/client';
+import { Icon, IconBolt, IconCurrencyDollar, IconProps } from '@tabler/icons-react';
 import { ModelSort } from '~/server/common/enums';
 import { IMAGE_MIME_TYPE } from '~/server/common/mime-types';
-import { IconBolt, IconCurrencyDollar, TablerIconsProps } from '@tabler/icons-react';
-import { MantineTheme } from '@mantine/core';
-import { ArticleSort, CollectionSort, ImageSort, PostSort, QuestionSort } from './enums';
 import { Generation } from '~/server/services/generation/generation.types';
+import { ArticleSort, CollectionSort, ImageSort, PostSort, QuestionSort } from './enums';
+import { env } from '~/env/client.mjs';
+import { ForwardRefExoticComponent, RefAttributes } from 'react';
 
 export const constants = {
   modelFilterDefaults: {
@@ -49,6 +51,7 @@ export const constants = {
     'SD 1.4',
     'SD 1.5',
     'SD 1.5 LCM',
+    'SD 1.5 Hyper',
     'SD 2.0',
     'SD 2.0 768',
     'SD 2.1',
@@ -56,19 +59,31 @@ export const constants = {
     'SD 2.1 Unclip',
     'SDXL 0.9',
     'SDXL 1.0',
+    'SD 3',
     'Pony',
     'SDXL 1.0 LCM',
     'SDXL Distilled',
     'SDXL Turbo',
     'SDXL Lightning',
+    'SDXL Hyper',
     'Stable Cascade',
     'SVD',
     'SVD XT',
     'Playground v2',
     'PixArt a',
+    'PixArt E',
+    'Hunyuan 1',
+    'Lumina',
     'Other',
   ],
-  hiddenBaseModels: [] as string[],
+  hiddenBaseModels: [
+    'ODOR',
+    'SD 2.1 768',
+    'SD 2.1 Unclip',
+    'SDXL Distilled',
+    'SDXL 0.9',
+    'SD 2.0 768',
+  ] as string[],
   modelFileTypes: [
     'Model',
     'Text Encoder',
@@ -193,8 +208,9 @@ export const constants = {
   maxTrainingRetries: 2,
   mediaUpload: {
     maxImageFileSize: 50 * 1024 ** 2, // 50MB
+    maxVideoFileSize: 750 * 1024 ** 2, // 750MB
     maxVideoDimension: 3840,
-    maxVideoDurationSeconds: 120,
+    maxVideoDurationSeconds: 245,
   },
   bounties: {
     engagementTypes: ['active', 'favorite', 'tracking', 'supporter', 'awarded'],
@@ -253,10 +269,14 @@ export const constants = {
     coverImageHeight: 400,
     coverImageWidth: 1600,
   },
+  article: {
+    coverImageHeight: 400,
+    coverImageWidth: 850,
+  },
   comments: {
     imageMaxDepth: 3,
     bountyEntryMaxDepth: 3,
-    maxDepth: 4,
+    maxDepth: 5,
   },
   altTruncateLength: 125,
   system: {
@@ -280,14 +300,14 @@ export const constants = {
       cover: ':modelVersionId/:userId/cover.jpg',
     },
   },
-  supporterBadge: 'a288c8c0-8b79-4e13-abd1-348989d7bac8',
+  supporterBadge: 'fea8a5fe-4cc9-4fb4-a86c-25f03db09d28',
   memberships: {
     tierOrder: ['founder', 'bronze', 'silver', 'gold'],
     badges: {
-      founder: 'a288c8c0-8b79-4e13-abd1-348989d7bac8',
-      bronze: 'a288c8c0-8b79-4e13-abd1-348989d7bac8',
-      silver: '26f5e4c8-0905-4f08-97d5-ad80e9fc292a',
-      gold: 'c1086607-bfb5-4f9f-b3fa-b8bd286cf9d1',
+      founder: 'fea8a5fe-4cc9-4fb4-a86c-25f03db09d28',
+      bronze: 'fea8a5fe-4cc9-4fb4-a86c-25f03db09d28',
+      silver: '392d474d-8745-416e-9aac-26ff5273974c',
+      gold: 'd47d01b6-fceb-495a-8e26-08eb062c040f',
     },
     founderDiscount: {
       maxDiscountDate: new Date('2024-05-01T00:00:00Z'),
@@ -306,6 +326,32 @@ export const constants = {
       queueLimit: 4,
       badgeType: 'none',
     },
+  },
+  cosmeticShop: {
+    sectionImageAspectRatio: 250 / 1288,
+    sectionImageHeight: 250,
+    sectionImageWidth: 1288,
+  },
+  cosmetics: {
+    frame: {
+      padding: 6,
+    },
+  },
+  modelGallery: {
+    maxPinnedPosts: 10,
+  },
+  chat: {
+    airRegex: /^civitai:(?<mId>\d+)@(?<mvId>\d+)$/i,
+    // TODO disable just "image.civitai.com" with nothing else
+    civRegex: new RegExp(
+      `^(?:https?://)?(?:image\\.)?(?:${(env.NEXT_PUBLIC_BASE_URL ?? 'civitai.com')
+        .replace(/^https?:\/\//, '')
+        .replace(/\./g, '\\.')}|civitai\\.com)`
+    ),
+    externalRegex: /^(?:https?:\/\/)?(?:www\.)?(github\.com|twitter\.com|x\.com)/,
+  },
+  entityCollaborators: {
+    maxCollaborators: 15,
   },
 } as const;
 export const activeBaseModels = constants.baseModels.filter(
@@ -331,8 +377,10 @@ export const zipModelFileTypes: ModelFileFormat[] = ['Core ML', 'Diffusers', 'ON
 export type ZipModelFileType = (typeof zipModelFileTypes)[number];
 
 export const POST_IMAGE_LIMIT = 20;
+export const POST_TAG_LIMIT = 5;
 export const CAROUSEL_LIMIT = 20;
 export const DEFAULT_EDGE_IMAGE_WIDTH = 450;
+export const MAX_ANIMATION_DURATION_SECONDS = 30;
 
 export type BaseModelType = (typeof constants.baseModelTypes)[number];
 
@@ -341,18 +389,28 @@ export type BaseModel = (typeof constants.baseModels)[number];
 export const baseModelSetTypes = [
   'SD1',
   'SD2',
+  'SD3',
   'SDXL',
   'SDXLDistilled',
   'SCascade',
   'Pony',
+  'PixArtA',
+  'PixArtE',
+  'Lumina',
+  'HyDit1',
   'ODOR',
 ] as const;
 export type BaseModelSetType = (typeof baseModelSetTypes)[number];
 export const baseModelSets: Record<BaseModelSetType, BaseModel[]> = {
-  SD1: ['SD 1.4', 'SD 1.5', 'SD 1.5 LCM'],
+  SD1: ['SD 1.4', 'SD 1.5', 'SD 1.5 LCM', 'SD 1.5 Hyper'],
   SD2: ['SD 2.0', 'SD 2.0 768', 'SD 2.1', 'SD 2.1 768', 'SD 2.1 Unclip'],
-  SDXL: ['SDXL 0.9', 'SDXL 1.0', 'SDXL 1.0 LCM', 'SDXL Lightning'],
+  SD3: ['SD 3'],
+  SDXL: ['SDXL 0.9', 'SDXL 1.0', 'SDXL 1.0 LCM', 'SDXL Lightning', 'SDXL Hyper', 'SDXL Turbo'],
   SDXLDistilled: ['SDXL Distilled'],
+  PixArtA: ['PixArt a'],
+  PixArtE: ['PixArt E'],
+  Lumina: ['Lumina'],
+  HyDit1: ['Hunyuan 1'],
   SCascade: ['Stable Cascade'],
   Pony: ['Pony'],
   ODOR: ['ODOR'],
@@ -402,28 +460,42 @@ export const baseLicenses: Record<string, LicenseDetails> = {
     notice:
       'This Stability AI Model is licensed under the Stability AI Non-Commercial Research Community License, Copyright (c) Stability AI Ltd. All Rights Reserved.',
   },
+  'hunyuan community': {
+    url: 'https://github.com/Tencent/HunyuanDiT/blob/main/LICENSE.txt',
+    name: 'Tencent Hunyuan Community License Agreement',
+  },
+  'apache 2.0': {
+    url: 'https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md',
+    name: 'Apache 2.0',
+  },
 };
 
 export const baseModelLicenses: Record<BaseModel, LicenseDetails | undefined> = {
   'SD 1.4': baseLicenses['openrail'],
   'SD 1.5': baseLicenses['openrail'],
   'SD 1.5 LCM': baseLicenses['openrail++'],
+  'SD 1.5 Hyper': baseLicenses['openrail++'],
   'SD 2.0': baseLicenses['openrail'],
   'SD 2.0 768': baseLicenses['openrail'],
   'SD 2.1': baseLicenses['openrail'],
   'SD 2.1 768': baseLicenses['openrail'],
   'SD 2.1 Unclip': baseLicenses['openrail'],
+  'SD 3': baseLicenses['SAI NC RC'],
   'SDXL 0.9': baseLicenses['sdxl 0.9'],
   'SDXL 1.0': baseLicenses['openrail++'],
   'SDXL 1.0 LCM': baseLicenses['openrail++'],
   'SDXL Distilled': baseLicenses['openrail++'],
   'SDXL Turbo': baseLicenses['sdxl turbo'],
   'SDXL Lightning': baseLicenses['openrail++'],
+  'SDXL Hyper': baseLicenses['openrail++'],
   SVD: baseLicenses['svd'],
   'SVD XT': baseLicenses['svd'],
   'Playground v2': baseLicenses['playground v2'],
-  'PixArt a': baseLicenses['agpl'],
-  'Stable Cascade': baseLicenses['SAI NCRC'],
+  'PixArt a': baseLicenses['openrail++'],
+  'PixArt E': baseLicenses['openrail++'],
+  'Hunyuan 1': baseLicenses['hunyuan community'],
+  Lumina: baseLicenses['apache 2.0'],
+  'Stable Cascade': baseLicenses['SAI NC RC'],
   Pony: baseLicenses['openrail++'],
   ODOR: undefined,
   Other: undefined,
@@ -497,7 +569,7 @@ export const generation = {
   },
   maxValues: {
     seed: 4294967295,
-    clipSkip: 10,
+    clipSkip: 3,
   },
 } as const;
 
@@ -511,6 +583,7 @@ export const generationConfig = {
     // additionalResourceTypes: [{ type: ModelType.LORA, baseModel: 'SD1' }],
     additionalResourceTypes: [
       { type: ModelType.LORA, baseModelSet: 'SD1' },
+      { type: ModelType.DoRA, baseModelSet: 'SD1' },
       { type: ModelType.LoCon, baseModelSet: 'SD1' },
       { type: ModelType.TextualInversion, baseModelSet: 'SD1' },
       { type: ModelType.VAE, baseModelSet: 'SD1' },
@@ -520,14 +593,6 @@ export const generationConfig = {
       { label: 'Landscape', width: 768, height: 512 },
       { label: 'Portrait', width: 512, height: 768 },
     ],
-    costs: {
-      // TODO.imageGenerationBuzzCharge - Remove all cost calculation from the front-end. This is done by the orchestrator.
-      base: 0,
-      quantity: 1,
-      steps: 30,
-      width: 512,
-      height: 512,
-    },
     checkpoint: {
       id: 128713,
       name: '8',
@@ -542,6 +607,7 @@ export const generationConfig = {
   SDXL: {
     additionalResourceTypes: [
       { type: ModelType.LORA, baseModelSet: 'SDXL' },
+      { type: ModelType.DoRA, baseModelSet: 'SDXL' },
       { type: ModelType.LoCon, baseModelSet: 'SDXL' },
       { type: ModelType.TextualInversion, baseModelSet: 'SDXL', baseModels: ['SD 1.5'] },
       { type: ModelType.VAE, baseModelSet: 'SDXL' },
@@ -551,15 +617,6 @@ export const generationConfig = {
       { label: 'Landscape', width: 1216, height: 832 },
       { label: 'Portrait', width: 832, height: 1216 },
     ],
-    costs: {
-      // TODO.imageGenerationBuzzCharge - Remove all cost calculation from the front-end. This is done by the orchestrator.
-      // base: 4,
-      base: 0,
-      quantity: 1,
-      steps: 30,
-      width: 1024,
-      height: 1024,
-    },
     checkpoint: {
       id: 128078,
       name: 'v1.0 VAE fix',
@@ -579,6 +636,11 @@ export const generationConfig = {
         baseModels: ['SDXL 0.9', 'SDXL 1.0', 'SDXL 1.0 LCM'],
       },
       {
+        type: ModelType.DoRA,
+        baseModelSet: 'Pony',
+        baseModels: ['SDXL 0.9', 'SDXL 1.0', 'SDXL 1.0 LCM'],
+      },
+      {
         type: ModelType.LoCon,
         baseModelSet: 'Pony',
         baseModels: ['SDXL 0.9', 'SDXL 1.0', 'SDXL 1.0 LCM'],
@@ -590,15 +652,6 @@ export const generationConfig = {
       { label: 'Landscape', width: 1216, height: 832 },
       { label: 'Portrait', width: 832, height: 1216 },
     ],
-    costs: {
-      // TODO.generation: Uncomment this out by next week once we start charging for SDXL generation
-      // base: 4,
-      base: 0,
-      quantity: 1,
-      steps: 40,
-      width: 1024,
-      height: 1024,
-    },
     checkpoint: {
       id: 290640,
       name: 'V6 (start with this one)',
@@ -619,12 +672,12 @@ export const getGenerationConfig = (baseModel?: string) => {
   return key && generationConfig[key] ? generationConfig[key] : generationConfig['SD1'];
 };
 
-export const MODELS_SEARCH_INDEX = 'models_v8';
-export const IMAGES_SEARCH_INDEX = 'images_v5';
-export const ARTICLES_SEARCH_INDEX = 'articles_v4';
-export const USERS_SEARCH_INDEX = 'users_v2';
-export const COLLECTIONS_SEARCH_INDEX = 'collections_v2';
-export const BOUNTIES_SEARCH_INDEX = 'bounties_v2';
+export const MODELS_SEARCH_INDEX = 'models_v9';
+export const IMAGES_SEARCH_INDEX = 'images_v6';
+export const ARTICLES_SEARCH_INDEX = 'articles_v5';
+export const USERS_SEARCH_INDEX = 'users_v3';
+export const COLLECTIONS_SEARCH_INDEX = 'collections_v3';
+export const BOUNTIES_SEARCH_INDEX = 'bounties_v3';
 
 export const modelVersionMonetizationTypeOptions: Record<ModelVersionMonetizationType, string> = {
   [ModelVersionMonetizationType.PaidAccess]: 'Paid access',
@@ -646,7 +699,7 @@ export const modelVersionSponsorshipSettingsTypeOptions: Record<
 export const CurrencyConfig: Record<
   Currency,
   {
-    icon: (props: TablerIconsProps) => JSX.Element;
+    icon: ForwardRefExoticComponent<IconProps & RefAttributes<Icon>>;
     color: (theme: MantineTheme) => string;
     fill?: (theme: MantineTheme) => string | string;
   }
@@ -690,3 +743,16 @@ export const RECAPTCHA_ACTIONS = {
 } as const;
 
 export type RecaptchaAction = keyof typeof RECAPTCHA_ACTIONS;
+
+export const creatorCardStats = [
+  'followers',
+  'likes',
+  'uploads',
+  'downloads',
+  'generations',
+  'reactions',
+];
+export const creatorCardStatsDefaults = ['followers', 'likes'];
+export const creatorCardMaxStats = 3;
+
+export const milestoneNotificationFix = '2024-04-20';

@@ -67,6 +67,7 @@ export function NotificationBell() {
             indicator: {
               height: '20px !important',
               cursor: 'pointer',
+              '> span': { marginBottom: '2px' },
             },
             common: {
               fontWeight: 500,
@@ -147,10 +148,11 @@ export function NotificationBell() {
               <NotificationList
                 items={notifications}
                 onItemClick={(notification, keepOpened) => {
-                  readNotificationMutation.mutate({
-                    id: notification.id,
-                    category: notification.category,
-                  });
+                  if (!notification.read)
+                    readNotificationMutation.mutate({
+                      id: notification.id,
+                      category: notification.category,
+                    });
                   setOpened(keepOpened);
                 }}
               />

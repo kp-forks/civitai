@@ -24,6 +24,7 @@ export function UserAvatarProfilePicture({
         <>
           {!isSelf && !safe ? (
             <Center h="100%" className="relative">
+              {/* TODO: this nests a button inside a button */}
               <ImageGuard2.BlurToggle>
                 {(toggle) => (
                   <ActionIcon
@@ -59,6 +60,10 @@ export function UserAvatarProfilePicture({
               anim={currentUser ? (!currentUser.autoplayGifs ? false : undefined) : undefined}
               wrapperProps={{ style: { width: '100%', height: '100%' } }}
               contain
+              style={{
+                objectFit: 'cover',
+                minHeight: '100%',
+              }}
             />
           )}
         </>

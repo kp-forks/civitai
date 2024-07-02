@@ -1,24 +1,22 @@
 import { z } from 'zod';
-
-import { env } from '~/env/server.mjs';
 import {
-  toggleCheckpointCoverageHandler,
   changeModelModifierHandler,
   declineReviewHandler,
   deleteModelHandler,
   findResourcesToAssociateHandler,
   getAssociatedResourcesCardDataHandler,
+  getAvailableTrainingModelsHandler,
   getDownloadCommandHandler,
   getModelByHashesHandler,
   getModelDetailsForReviewHandler,
   getModelGallerySettingsHandler,
   getModelHandler,
   getModelReportDetailsHandler,
+  getModelsInfiniteHandler,
+  getModelsPagedSimpleHandler,
   getModelTemplateFieldsHandler,
   getModelTemplateFromBountyHandler,
   getModelVersionsHandler,
-  getModelsInfiniteHandler,
-  getModelsPagedSimpleHandler,
   getMyDraftModelsHandler,
   getMyTrainingModelsHandler,
   getSimpleModelsInfiniteHandler,
@@ -26,26 +24,27 @@ import {
   reorderModelVersionsHandler,
   requestReviewHandler,
   restoreModelHandler,
+  toggleCheckpointCoverageHandler,
   toggleModelLockHandler,
   unpublishModelHandler,
   updateGallerySettingsHandler,
   upsertModelHandler,
+  getModelOwnerHandler,
 } from '~/server/controllers/model.controller';
 import { dbRead } from '~/server/db/client';
 import { applyUserPreferences, cacheIt, edgeCacheIt } from '~/server/middleware.trpc';
 import { getAllQuerySchema, getByIdSchema } from '~/server/schema/base.schema';
 import {
-  GetAllModelsOutput,
-  ModelInput,
   changeModelModifierSchema,
   declineReviewSchema,
   deleteModelSchema,
   findResourcesToAssociateSchema,
+  GetAllModelsOutput,
   getAllModelsSchema,
   getAssociatedResourcesSchema,
   getDownloadSchema,
-  getModelVersionsSchema,
   getModelsWithCategoriesSchema,
+  getModelVersionsSchema,
   getSimpleModelsInfiniteSchema,
   modelByHashesInput,
   modelUpsertSchema,
@@ -74,9 +73,7 @@ import {
   publicProcedure,
   router,
 } from '~/server/trpc';
-import { throwAuthorizationError, throwBadRequestError } from '~/server/utils/errorHandling';
-import { prepareFile } from '~/utils/file-helpers';
-import { checkFileExists, getS3Client } from '~/utils/s3-utils';
+import { throwAuthorizationError } from '~/server/utils/errorHandling';
 
 const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
   if (!ctx.user) throw throwAuthorizationError();
@@ -99,27 +96,6 @@ const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
   });
 });
 
-const checkFilesExistence = middleware(async ({ input, ctx, next }) => {
-  if (!ctx.user) throw throwAuthorizationError();
-
-  const { modelVersions } = input as ModelInput;
-  const files = modelVersions.flatMap(({ files }) => files?.map(prepareFile) ?? []);
-  const s3 = getS3Client();
-
-  for (const file of files) {
-    if (!file.url || !file.url.includes(env.S3_UPLOAD_BUCKET)) continue;
-    const fileExists = await checkFileExists(file.url, s3);
-    if (!fileExists)
-      throw throwBadRequestError(`File ${file.name} could not be found. Please re-upload.`, {
-        file,
-      });
-  }
-
-  return next({
-    ctx: { user: ctx.user },
-  });
-});
-
 const skipEdgeCache = middleware(async ({ input, ctx, next }) => {
   const _input = input as GetAllModelsOutput;
 
@@ -130,10 +106,11 @@ const skipEdgeCache = middleware(async ({ input, ctx, next }) => {
 
 export const modelRouter = router({
   getById: publicProcedure.input(getByIdSchema).query(getModelHandler),
+  getOwner: publicProcedure.input(getByIdSchema).query(getModelOwnerHandler),
   getAll: publicProcedure
     .input(getAllModelsSchema.extend({ page: z.never().optional() }))
     .use(skipEdgeCache)
-    .use(edgeCacheIt({ ttl: 60, tags: () => ['models'] }))
+    .use(edgeCacheIt({ ttl: 60 }))
     .query(getModelsInfiniteHandler),
   getAllPagedSimple: publicProcedure
     .input(getAllModelsSchema.extend({ cursor: z.never().optional() }))
@@ -147,6 +124,7 @@ export const modelRouter = router({
   getMyTrainingModels: protectedProcedure
     .input(getAllQuerySchema)
     .query(getMyTrainingModelsHandler),
+  getAvailableTrainingModels: protectedProcedure.query(getAvailableTrainingModelsHandler),
   upsert: guardedProcedure.input(modelUpsertSchema).mutation(upsertModelHandler),
   delete: protectedProcedure
     .input(deleteModelSchema)
@@ -165,7 +143,7 @@ export const modelRouter = router({
   getModelDetailsForReview: publicProcedure
     .input(getByIdSchema)
     .query(getModelDetailsForReviewHandler),
-  restore: protectedProcedure.input(getByIdSchema).mutation(restoreModelHandler),
+  restore: moderatorProcedure.input(getByIdSchema).mutation(restoreModelHandler),
   getDownloadCommand: protectedProcedure.input(getDownloadSchema).query(getDownloadCommandHandler),
   reorderVersions: protectedProcedure
     .input(reorderModelVersionsSchema)
@@ -182,7 +160,10 @@ export const modelRouter = router({
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .mutation(requestReviewHandler),
-  declineReview: protectedProcedure.input(declineReviewSchema).mutation(declineReviewHandler),
+  declineReview: protectedProcedure
+    .input(declineReviewSchema)
+    .use(isOwnerOrModerator)
+    .mutation(declineReviewHandler),
   changeMode: protectedProcedure
     .input(changeModelModifierSchema)
     .use(isOwnerOrModerator)

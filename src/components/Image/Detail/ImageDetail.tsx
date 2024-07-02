@@ -20,18 +20,14 @@ import {
   IconDotsVertical,
   IconEye,
   IconFlag,
-  IconX,
 } from '@tabler/icons-react';
 import { adsRegistry } from '~/components/Ads/adsRegistry';
 import { Adunit } from '~/components/Ads/AdUnit';
 import { AlertWithIcon } from '~/components/AlertWithIcon/AlertWithIcon';
 import { NotFound } from '~/components/AppLayout/NotFound';
 import { useBrowserRouter } from '~/components/BrowserRouter/BrowserRouterProvider';
-import { TipBuzzButton } from '~/components/Buzz/TipBuzzButton';
-import { ChatUserButton } from '~/components/Chat/ChatUserButton';
 import { DaysFromNow } from '~/components/Dates/DaysFromNow';
 import { RoutedDialogLink } from '~/components/Dialog/RoutedDialogProvider';
-import { FollowUserButton } from '~/components/FollowUserButton/FollowUserButton';
 import { ImageDetailCarousel } from '~/components/Image/Detail/ImageDetailCarousel';
 import { ImageDetailComments } from '~/components/Image/Detail/ImageDetailComments';
 import { ImageDetailContextMenu } from '~/components/Image/Detail/ImageDetailContextMenu';
@@ -44,14 +40,13 @@ import { PageLoader } from '~/components/PageLoader/PageLoader';
 import { Reactions } from '~/components/Reaction/Reactions';
 import { ReactionSettingsProvider } from '~/components/Reaction/ReactionSettingsProvider';
 import { TrackView } from '~/components/TrackView/TrackView';
-import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
 import { VotableTags } from '~/components/VotableTags/VotableTags';
 import { env } from '~/env/client.mjs';
 import { openContext } from '~/providers/CustomModalsProvider';
 import { ReportEntity } from '~/server/schema/report.schema';
 import { getIsSafeBrowsingLevel } from '~/shared/constants/browsingLevel.constants';
-import { useImageStore } from '~/store/image.store';
 import { containerQuery } from '~/utils/mantine-css-helpers';
+import { SmartCreatorCard } from '~/components/CreatorCard/CreatorCard';
 
 export function ImageDetail() {
   const { classes, cx, theme } = useStyles();
@@ -103,66 +98,7 @@ export function ImageDetail() {
             </ReactionSettingsProvider>
           </div>
           <Card className={cx(classes.sidebar)}>
-            <Card.Section py="xs" withBorder inheritPadding>
-              <Group position="apart" spacing={8}>
-                <UserAvatar
-                  user={image.user}
-                  avatarProps={{ size: 32 }}
-                  size="sm"
-                  subText={
-                    <Text size="xs" color="dimmed">
-                      {image.publishedAt ? (
-                        <>
-                          Uploaded <DaysFromNow date={image.publishedAt} />
-                        </>
-                      ) : (
-                        'Not published'
-                      )}
-                    </Text>
-                  }
-                  subTextForce
-                  withUsername
-                  linkToProfile
-                />
-                <Group spacing={8} noWrap>
-                  <TipBuzzButton
-                    toUserId={image.user.id}
-                    entityId={image.id}
-                    entityType="Image"
-                    size="md"
-                    compact
-                  />
-                  <ChatUserButton user={image.user} size="md" compact />
-                  <FollowUserButton userId={image.user.id} size="md" compact />
-                  <ActionIcon
-                    onClick={toggleInfo}
-                    size="md"
-                    radius="xl"
-                    className={classes.mobileOnly}
-                  >
-                    <IconX size={20} />
-                  </ActionIcon>
-                  <CloseButton
-                    size="md"
-                    radius="xl"
-                    variant="transparent"
-                    ml="auto"
-                    iconSize={20}
-                    className={classes.desktopOnly}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      close();
-                    }}
-                  />
-                </Group>
-              </Group>
-            </Card.Section>
-            <Card.Section
-              py="xs"
-              sx={{ backgroundColor: theme.colors.dark[7] }}
-              withBorder
-              inheritPadding
-            >
+            <Card.Section py="xs" sx={{ backgroundColor: theme.colors.dark[7] }} inheritPadding>
               <Stack spacing={8}>
                 <Group position="apart" spacing={8}>
                   <Group spacing={8}>
@@ -178,7 +114,7 @@ export function ImageDetail() {
                             size="md"
                             radius="xl"
                             color="gray"
-                            variant={theme.colorScheme === 'dark' ? 'filled' : 'light'}
+                            variant="filled"
                             compact
                           >
                             <Group spacing={4}>
@@ -193,7 +129,7 @@ export function ImageDetail() {
                           size="md"
                           radius="xl"
                           color="gray"
-                          variant={theme.colorScheme === 'dark' ? 'filled' : 'light'}
+                          variant="filled"
                           compact
                           onClick={close}
                         >
@@ -207,7 +143,7 @@ export function ImageDetail() {
                       size={30}
                       radius="xl"
                       color="gray"
-                      variant={theme.colorScheme === 'dark' ? 'filled' : 'light'}
+                      variant="filled"
                       onClick={() =>
                         openContext('addToCollection', {
                           imageId: image.id,
@@ -222,7 +158,7 @@ export function ImageDetail() {
                     <LoginRedirect reason={'report-content'}>
                       <ActionIcon
                         size={30}
-                        variant={theme.colorScheme === 'dark' ? 'filled' : 'light'}
+                        variant="filled"
                         radius="xl"
                         onClick={() => {
                           openContext('report', {
@@ -235,17 +171,46 @@ export function ImageDetail() {
                       </ActionIcon>
                     </LoginRedirect>
                     <ImageDetailContextMenu>
-                      <ActionIcon
-                        size={30}
-                        variant={theme.colorScheme === 'dark' ? 'filled' : 'light'}
-                        radius="xl"
-                      >
+                      <ActionIcon size={30} variant="filled" radius="xl">
                         <IconDotsVertical size={14} />
                       </ActionIcon>
                     </ImageDetailContextMenu>
+                    {/* Need this two identical buttons that do different actions */}
+                    {/* in desktop and mobile just to avoid js media queria detection */}
+                    <CloseButton
+                      className={classes.desktopOnly}
+                      radius="xl"
+                      variant="filled"
+                      onClick={close}
+                    />
+                    <CloseButton
+                      className={classes.mobileOnly}
+                      radius="xl"
+                      variant="filled"
+                      onClick={toggleInfo}
+                    />
                   </Group>
                 </Group>
               </Stack>
+            </Card.Section>
+            <Card.Section style={{ position: 'relative' }} withBorder>
+              <SmartCreatorCard
+                user={image.user}
+                style={{ border: 0 }}
+                subText={
+                  <Text size="xs" color="dimmed">
+                    {image.publishedAt ? (
+                      <>
+                        Uploaded <DaysFromNow date={image.publishedAt} />
+                      </>
+                    ) : (
+                      'Not published'
+                    )}
+                  </Text>
+                }
+                tipBuzzEntityId={image.id}
+                tipBuzzEntityType="Image"
+              />
             </Card.Section>
             <Card.Section
               component={ScrollArea}
@@ -311,7 +276,7 @@ export function ImageDetail() {
                   <Box px="md">
                     <ImageResources imageId={image.id} />
                   </Box>
-                  {image.meta && (
+                  {image.meta && !image.hideMeta && (
                     <>
                       <Divider label="Generation Data" labelPosition="center" mb={-15} />
                       <Box px="md">

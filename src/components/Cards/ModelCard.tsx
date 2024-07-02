@@ -1,15 +1,4 @@
-import {
-  ActionIcon,
-  Badge,
-  Center,
-  Divider,
-  Group,
-  Menu,
-  Stack,
-  Text,
-  UnstyledButton,
-  Button,
-} from '@mantine/core';
+import { ActionIcon, Badge, Center, Divider, Group, Menu, Stack, Text } from '@mantine/core';
 import {
   IconDownload,
   IconMessageCircle2,
@@ -22,7 +11,6 @@ import {
   IconArchiveFilled,
   IconHorse,
 } from '@tabler/icons-react';
-import { useRouter } from 'next/router';
 import React from 'react';
 // import { z } from 'zod';
 import { FeedCard } from '~/components/Cards/FeedCard';
@@ -33,7 +21,6 @@ import { HideUserButton } from '~/components/HideUserButton/HideUserButton';
 import { MediaHash } from '~/components/ImageHash/ImageHash';
 import { AddToCollectionMenuItem } from '~/components/MenuItems/AddToCollectionMenuItem';
 import { ReportMenuItem } from '~/components/MenuItems/ReportMenuItem';
-import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { openContext } from '~/providers/CustomModalsProvider';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
@@ -43,7 +30,7 @@ import { aDayAgo } from '~/utils/date-helpers';
 import { abbreviateNumber } from '~/utils/number-helpers';
 import { getDisplayName, slugit } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
-import { CollectionType, CosmeticType, ModelModifier } from '@prisma/client';
+import { CollectionType, CosmeticEntity, ModelModifier } from '@prisma/client';
 import HoverActionButton from '~/components/Cards/components/HoverActionButton';
 import { CivitaiLinkManageButton } from '~/components/CivitaiLink/CivitaiLinkManageButton';
 import { generationPanel } from '~/store/generation.store';
@@ -57,15 +44,16 @@ import { useModelCardContext } from '~/components/Cards/ModelCardContext';
 import { AddToShowcaseMenuItem } from '~/components/Profile/AddToShowcaseMenuItem';
 import { OnsiteIndicator } from '~/components/Image/Indicators/OnsiteIndicator';
 import { useInView } from '~/hooks/useInView';
-import { HolidayFrame } from '../Decorations/HolidayFrame';
 import { truncate } from 'lodash-es';
 import { ImageMetaProps } from '~/server/schema/image.schema';
 import { ToggleSearchableMenuItem } from '../MenuItems/ToggleSearchableMenuItem';
 import { ImageGuard2 } from '~/components/ImageGuard/ImageGuard2';
 import { ThumbsUpIcon } from '~/components/ThumbsIcon/ThumbsIcon';
+import { AddArtFrameMenuItem } from '~/components/Decorations/AddArtFrameMenuItem';
 import { IconNose } from '~/components/SVG/IconNose';
 import { UserAvatarSimple } from '~/components/UserAvatar/UserAvatarSimple';
-import { NextLink } from '@mantine/next';
+import { VideoMetadata } from '~/server/schema/media.schema';
+import { shouldAnimateByDefault } from '~/components/EdgeMedia/EdgeMedia.util';
 
 const IMAGE_CARD_WIDTH = 450;
 
@@ -81,7 +69,6 @@ export function ModelCard({ data, forceInView }: Props) {
     aspectRatio,
   });
 
-  const router = useRouter();
   const currentUser = useCurrentUser();
   const features = useFeatureFlags();
   const tippedAmount = useBuzzTippingStore({ entityType: 'Model', entityId: data.id });
@@ -141,9 +128,16 @@ export function ModelCard({ data, forceInView }: Props) {
     ]);
   }
 
-  if (features.profileOverhaul && currentUser?.id === data.user.id) {
+  if (currentUser?.id === data.user.id) {
     contextMenuItems = contextMenuItems.concat([
       <AddToShowcaseMenuItem key="add-to-showcase" entityType="Model" entityId={data.id} />,
+      <AddArtFrameMenuItem
+        key="add-art-frame"
+        entityType={CosmeticEntity.Model}
+        entityId={data.id}
+        image={data.images[0]}
+        currentCosmetic={data.cosmetic}
+      />,
     ]);
   }
 
@@ -197,6 +191,9 @@ export function ModelCard({ data, forceInView }: Props) {
   const isArchived = data.mode === ModelModifier.Archived;
   const onSite = !!data.version.trainingStatus;
 
+  const isPOI = data.poi;
+  const isMinor = data.minor;
+
   const thumbsUpCount = data.rank?.thumbsUpCount ?? 0;
   const thumbsDownCount = data.rank?.thumbsDownCount ?? 0;
   const totalCount = thumbsUpCount + thumbsDownCount;
@@ -206,511 +203,289 @@ export function ModelCard({ data, forceInView }: Props) {
   let href = `/models/${data.id}/${slugit(data.name)}`;
   if (useModelVersionRedirect) href += `?modelVersionId=${data.version.id}`;
 
-  const cardDecoration = data.user.cosmetics?.find(
-    ({ cosmetic }) => cosmetic.type === CosmeticType.ContentDecoration
-  ) as (typeof data.user.cosmetics)[number] & {
-    data?: { lights?: number; upgradedLights?: number };
-  };
-
   // Small hack to prevent blurry landscape images
   const originalAspectRatio = image && image.width && image.height ? image.width / image.height : 1;
 
   return (
-    <HolidayFrame {...cardDecoration}>
-      {/* <NextLink
-        href={href}
-        className={`card aspect-portrait ${!image ? 'vertical-gradient-dark' : ''}`}
-        ref={ref}
-      >
-        <MediaHash {...image} />
-        {inView && (
-          <>
-            {image && (
-              <ImageGuard2 image={image} connectType="model" connectId={data.id}>
-                {(safe) => (
-                  <>
-                    <div className="absolute top-0 z-10 w-full flex justify-between p-2">
-                      <div className="flex gap-1">
-                        <ImageGuard2.BlurToggle className="rounded-3xl h-6" />
-                        <Badge
-                          className={cx(classes.infoChip, classes.chip)}
-                          variant="light"
-                          radius="xl"
-                        >
-                          <Text color="white" size="xs" transform="capitalize">
-                            {getDisplayName(data.type)}
-                          </Text>
-                          {isSDXL && (
-                            <>
-                              <Divider orientation="vertical" />
-                              {isPony ? (
-                                <IconHorse size={16} strokeWidth={2.5} />
-                              ) : (
-                                <Text color="white" size="xs">
-                                  XL
-                                </Text>
-                              )}
-                            </>
+    <FeedCard
+      className={!image ? classes.noImage : undefined}
+      href={href}
+      frameDecoration={data.cosmetic}
+    >
+      <div className={classes.root} ref={ref}>
+        <div className={classes.content} style={{ opacity: inView ? 1 : undefined }}>
+          {inView && (
+            <>
+              {image ? (
+                <ImageGuard2 image={image} connectType="model" connectId={data.id}>
+                  {(safe) => (
+                    <>
+                      <Group
+                        spacing={4}
+                        position="apart"
+                        align="start"
+                        className={cx(classes.contentOverlay, classes.top)}
+                        noWrap
+                      >
+                        <Group spacing={4}>
+                          <ImageGuard2.BlurToggle className={classes.chip} />
+                          {currentUser?.isModerator && isPOI && (
+                            <Badge
+                              className={cx(classes.infoChip, classes.chip, classes.forMod)}
+                              variant="light"
+                              radius="xl"
+                            >
+                              <Text color="white" size="xs" transform="capitalize">
+                                POI
+                              </Text>
+                            </Badge>
                           )}
-                          {isOdor && (
-                            <>
-                              <Divider orientation="vertical" />
-                              <IconNose size={16} strokeWidth={2} />
-                            </>
+                          {currentUser?.isModerator && isMinor && (
+                            <Badge
+                              className={cx(classes.infoChip, classes.chip, classes.forMod)}
+                              variant="light"
+                              radius="xl"
+                            >
+                              <Text color="white" size="xs" transform="capitalize">
+                                Minor
+                              </Text>
+                            </Badge>
                           )}
-                        </Badge>
-
-                        {(isNew || isUpdated) && (
-                          <Badge
-                            className={classes.chip}
-                            variant="filled"
-                            radius="xl"
-                            sx={(theme) => ({
-                              backgroundColor: isUpdated
-                                ? theme.colors.success[5]
-                                : theme.colors.blue[theme.fn.primaryShade()],
-                            })}
-                          >
-                            <Text color="white" size="xs" transform="capitalize">
-                              {isUpdated ? 'Updated' : 'New'}
-                            </Text>
-                          </Badge>
-                        )}
-                        {isArchived && (
                           <Badge
                             className={cx(classes.infoChip, classes.chip)}
                             variant="light"
                             radius="xl"
                           >
-                            <IconArchiveFilled size={16} />
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        {contextMenuItems.length > 0 && (
-                          <Menu position="left-start" withArrow offset={-5} withinPortal>
-                            <Menu.Target>
-                              <ActionIcon
-                                variant="transparent"
-                                p={0}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                }}
-                              >
-                                <IconDotsVertical
-                                  size={24}
-                                  color="#fff"
-                                  style={{ filter: `drop-shadow(0 0 2px #000)` }}
-                                />
-                              </ActionIcon>
-                            </Menu.Target>
-                            <Menu.Dropdown>{contextMenuItems.map((el) => el)}</Menu.Dropdown>
-                          </Menu>
-                        )}
+                            <Text color="white" size="xs" transform="capitalize">
+                              {getDisplayName(data.type)}
+                            </Text>
 
-                        {features.imageGeneration && data.canGenerate && (
-                          <HoverActionButton
-                            label="Create"
-                            size={30}
-                            color="white"
-                            variant="filled"
-                            data-activity="create:model-card"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              generationPanel.open({
-                                type: 'modelVersion',
-                                id: data.version.id,
-                              });
-                            }}
-                          >
-                            <IconBrush stroke={2.5} size={16} />
-                          </HoverActionButton>
-                        )}
-                        <CivitaiLinkManageButton
-                          modelId={data.id}
-                          modelName={data.name}
-                          modelType={data.type}
-                          hashes={data.hashes}
-                          noTooltip
-                          iconSize={16}
-                        >
-                          {({ color, onClick, icon, label }) => (
-                            <HoverActionButton
-                              onClick={onClick}
-                              label={label}
-                              size={30}
-                              color={color}
-                              variant="filled"
-                              keepIconOnHover
-                            >
-                              {icon}
-                            </HoverActionButton>
-                          )}
-                        </CivitaiLinkManageButton>
-                      </div>
-                    </div>
-                    {safe ? (
-                      <EdgeMedia
-                        src={image.url}
-                        name={image.name ?? image.id.toString()}
-                        alt={image.name}
-                        type={image.type}
-                        width={
-                          originalAspectRatio > 1
-                            ? IMAGE_CARD_WIDTH * originalAspectRatio
-                            : IMAGE_CARD_WIDTH
-                        }
-                        placeholder="empty"
-                        className={`h-full min-w-full relative transition duration-500 transform hover:scale-105 object-cover ${
-                          aspectRatio < 1 ? 'object-top' : 'object-center'
-                        }`}
-                        wrapperProps={{ className: 'h-full w-full' }}
-                        contain
-                      />
-                    ) : null}
-                    <div className="absolute bottom-0 w-full p-3">
-                      {data.user.id !== -1 && <UserAvatarSimple {...data.user} />}
-                      <Text size="xl" weight={700} lineClamp={3} lh={1.2}>
-                        {data.name}
-                      </Text>
-                      {data.rank && (
-                        <Group align="center" position="apart" spacing={4}>
-                          {(!!data.rank.downloadCount ||
-                            !!data.rank.collectedCount ||
-                            !!data.rank.tippedAmountCount) && (
+                            {isSDXL && (
+                              <>
+                                <Divider orientation="vertical" />
+                                {isPony ? (
+                                  <IconHorse size={16} strokeWidth={2.5} />
+                                ) : (
+                                  <Text color="white" size="xs">
+                                    XL
+                                  </Text>
+                                )}
+                              </>
+                            )}
+                            {isOdor && (
+                              <>
+                                <Divider orientation="vertical" />
+                                <IconNose size={16} strokeWidth={2} />
+                              </>
+                            )}
+                          </Badge>
+
+                          {(isNew || isUpdated) && (
                             <Badge
-                              className={cx(classes.statChip, classes.chip)}
+                              className={classes.chip}
+                              variant="filled"
+                              radius="xl"
+                              sx={(theme) => ({
+                                backgroundColor: isUpdated
+                                  ? theme.colors.success[5]
+                                  : theme.colors.blue[theme.fn.primaryShade()],
+                              })}
+                            >
+                              <Text color="white" size="xs" transform="capitalize">
+                                {isUpdated ? 'Updated' : 'New'}
+                              </Text>
+                            </Badge>
+                          )}
+                          {isArchived && (
+                            <Badge
+                              className={cx(classes.infoChip, classes.chip)}
                               variant="light"
                               radius="xl"
                             >
-                              <Group spacing={2}>
-                                <IconDownload size={14} strokeWidth={2.5} />
-                                <Text size="xs">{abbreviateNumber(data.rank.downloadCount)}</Text>
-                              </Group>
-                              <Group spacing={2}>
-                                <IconBookmark size={14} strokeWidth={2.5} />
-                                <Text size="xs">{abbreviateNumber(data.rank.collectedCount)}</Text>
-                              </Group>
-                              <Group spacing={2}>
-                                <IconMessageCircle2 size={14} strokeWidth={2.5} />
-                                <Text size="xs">{abbreviateNumber(data.rank.commentCount)}</Text>
-                              </Group>
-                              <InteractiveTipBuzzButton
-                                toUserId={data.user.id}
-                                entityType={'Model'}
-                                entityId={data.id}
-                              >
-                                <Group spacing={2}>
-                                  <IconBolt size={14} strokeWidth={2.5} />
-                                  <Text size="xs" tt="uppercase">
-                                    {abbreviateNumber(data.rank.tippedAmountCount + tippedAmount)}
-                                  </Text>
-                                </Group>
-                              </InteractiveTipBuzzButton>
-                            </Badge>
-                          )}
-                          {!data.locked && !!data.rank.thumbsUpCount && (
-                            <Badge
-                              className={cx(classes.statChip, classes.chip)}
-                              pl={6}
-                              pr={8}
-                              data-reviewed={hasReview}
-                              radius="xl"
-                              title={`${Math.round(positiveRating * 100)}% of reviews are positive`}
-                            >
-                              <Group spacing={4}>
-                                <Text
-                                  color={hasReview ? 'success.5' : 'yellow'}
-                                  component="span"
-                                  mt={2}
-                                >
-                                  <ThumbsUpIcon size={20} filled={hasReview} strokeWidth={2.5} />
-                                </Text>
-                                <Text size={16} weight={500}>
-                                  {abbreviateNumber(data.rank.thumbsUpCount)}
-                                </Text>
-                              </Group>
+                              <IconArchiveFilled size={16} />
                             </Badge>
                           )}
                         </Group>
-                      )}
-                    </div>
-                    {onSite && <OnsiteIndicator />}
-                  </>
-                )}
-              </ImageGuard2>
-            )}
-          </>
-        )}
-      </NextLink> */}
-      <FeedCard className={image ? classes.noImage : undefined} href={href}>
-        <div className={classes.root} ref={ref}>
-          {image && (
-            <div className={classes.blurHash}>
-              <MediaHash {...image} />
-            </div>
-          )}
-          <div className={classes.content} style={{ opacity: inView ? 1 : undefined }}>
-            {inView && (
-              <>
-                {image && (
-                  <ImageGuard2 image={image} connectType="model" connectId={data.id}>
-                    {(safe) => {
-                      // Small hack to prevent blurry landscape images
-                      const originalAspectRatio =
-                        image.width && image.height ? image.width / image.height : 1;
-                      return (
-                        <>
-                          <Group
-                            spacing={4}
-                            position="apart"
-                            align="start"
-                            className={cx(classes.contentOverlay, classes.top)}
-                            noWrap
-                          >
-                            <Group spacing={4}>
-                              <ImageGuard2.BlurToggle className={classes.chip} />
-                              <Badge
-                                className={cx(classes.infoChip, classes.chip)}
-                                variant="light"
-                                radius="xl"
-                              >
-                                <Text color="white" size="xs" transform="capitalize">
-                                  {getDisplayName(data.type)}
-                                </Text>
-                                {isSDXL && (
-                                  <>
-                                    <Divider orientation="vertical" />
-                                    {isPony ? (
-                                      <IconHorse size={16} strokeWidth={2.5} />
-                                    ) : (
-                                      <Text color="white" size="xs">
-                                        XL
-                                      </Text>
-                                    )}
-                                  </>
-                                )}
-                                {isOdor && (
-                                  <>
-                                    <Divider orientation="vertical" />
-                                    <IconNose size={16} strokeWidth={2} />
-                                  </>
-                                )}
-                              </Badge>
-
-                              {(isNew || isUpdated) && (
-                                <Badge
-                                  className={classes.chip}
-                                  variant="filled"
-                                  radius="xl"
-                                  sx={(theme) => ({
-                                    backgroundColor: isUpdated
-                                      ? theme.colors.success[5]
-                                      : theme.colors.blue[theme.fn.primaryShade()],
-                                  })}
-                                >
-                                  <Text color="white" size="xs" transform="capitalize">
-                                    {isUpdated ? 'Updated' : 'New'}
-                                  </Text>
-                                </Badge>
-                              )}
-                              {isArchived && (
-                                <Badge
-                                  className={cx(classes.infoChip, classes.chip)}
-                                  variant="light"
-                                  radius="xl"
-                                >
-                                  <IconArchiveFilled size={16} />
-                                </Badge>
-                              )}
-                            </Group>
-                            <Stack spacing="xs">
-                              {contextMenuItems.length > 0 && (
-                                <Menu position="left-start" withArrow offset={-5} withinPortal>
-                                  <Menu.Target>
-                                    <ActionIcon
-                                      variant="transparent"
-                                      p={0}
-                                      onClick={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                      }}
-                                    >
-                                      <IconDotsVertical
-                                        size={24}
-                                        color="#fff"
-                                        style={{ filter: `drop-shadow(0 0 2px #000)` }}
-                                      />
-                                    </ActionIcon>
-                                  </Menu.Target>
-                                  <Menu.Dropdown>{contextMenuItems.map((el) => el)}</Menu.Dropdown>
-                                </Menu>
-                              )}
-
-                              {features.imageGeneration && data.canGenerate && (
-                                <HoverActionButton
-                                  label="Create"
-                                  size={30}
-                                  color="white"
-                                  variant="filled"
-                                  data-activity="create:model-card"
+                        <Stack spacing="xs">
+                          {contextMenuItems.length > 0 && (
+                            <Menu position="left-start" withArrow offset={-5} withinPortal>
+                              <Menu.Target>
+                                <ActionIcon
+                                  variant="transparent"
+                                  p={0}
                                   onClick={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
-                                    generationPanel.open({
-                                      type: 'modelVersion',
-                                      id: data.version.id,
-                                    });
                                   }}
                                 >
-                                  <IconBrush stroke={2.5} size={16} />
-                                </HoverActionButton>
-                              )}
-                              <CivitaiLinkManageButton
-                                modelId={data.id}
-                                modelName={data.name}
-                                modelType={data.type}
-                                hashes={data.hashes}
-                                noTooltip
-                                iconSize={16}
-                              >
-                                {({ color, onClick, icon, label }) => (
-                                  <HoverActionButton
-                                    onClick={onClick}
-                                    label={label}
-                                    size={30}
-                                    color={color}
-                                    variant="filled"
-                                    keepIconOnHover
-                                  >
-                                    {icon}
-                                  </HoverActionButton>
-                                )}
-                              </CivitaiLinkManageButton>
-                            </Stack>
-                          </Group>
-                          {image ? (
-                            <>
-                              {safe && (
-                                <EdgeMedia
-                                  src={image.url}
-                                  name={image.name ?? image.id.toString()}
-                                  alt={
-                                    image.meta
-                                      ? truncate((image.meta as ImageMetaProps).prompt, {
-                                          length: 125,
-                                        })
-                                      : undefined
-                                  }
-                                  type={image.type}
-                                  width={
-                                    originalAspectRatio > 1
-                                      ? IMAGE_CARD_WIDTH * originalAspectRatio
-                                      : IMAGE_CARD_WIDTH
-                                  }
-                                  placeholder="empty"
-                                  className={classes.image}
-                                  // loading="lazy"
-                                  wrapperProps={{ style: { height: '100%', width: '100%' } }}
-                                  contain
-                                />
-                              )}
-                            </>
-                          ) : (
-                            <>
-                              <Text color="dimmed">This model has no images</Text>
-                            </>
+                                  <IconDotsVertical
+                                    size={24}
+                                    color="#fff"
+                                    style={{ filter: `drop-shadow(0 0 2px #000)` }}
+                                  />
+                                </ActionIcon>
+                              </Menu.Target>
+                              <Menu.Dropdown>{contextMenuItems.map((el) => el)}</Menu.Dropdown>
+                            </Menu>
                           )}
-                        </>
-                      );
-                    }}
-                  </ImageGuard2>
-                )}
 
-                <Stack
-                  className={cx(
-                    'footer',
-                    classes.contentOverlay,
-                    classes.bottom,
-                    classes.gradientOverlay
-                  )}
-                  spacing={5}
-                >
-                  {data.user.id !== -1 && <UserAvatarSimple {...data.user} />}
-                  <Text size="xl" weight={700} lineClamp={3} lh={1.2}>
-                    {data.name}
-                  </Text>
-                  {data.rank && (
-                    <Group align="center" position="apart" spacing={4}>
-                      {(!!data.rank.downloadCount ||
-                        !!data.rank.collectedCount ||
-                        !!data.rank.tippedAmountCount) && (
-                        <Badge
-                          className={cx(classes.statChip, classes.chip)}
-                          variant="light"
-                          radius="xl"
-                        >
-                          <Group spacing={2}>
-                            <IconDownload size={14} strokeWidth={2.5} />
-                            <Text size="xs">{abbreviateNumber(data.rank.downloadCount)}</Text>
-                          </Group>
-                          <Group spacing={2}>
-                            <IconBookmark size={14} strokeWidth={2.5} />
-                            <Text size="xs">{abbreviateNumber(data.rank.collectedCount)}</Text>
-                          </Group>
-                          <Group spacing={2}>
-                            <IconMessageCircle2 size={14} strokeWidth={2.5} />
-                            <Text size="xs">{abbreviateNumber(data.rank.commentCount)}</Text>
-                          </Group>
-                          <InteractiveTipBuzzButton
-                            toUserId={data.user.id}
-                            entityType={'Model'}
-                            entityId={data.id}
-                          >
-                            <Group spacing={2}>
-                              <IconBolt size={14} strokeWidth={2.5} />
-                              <Text size="xs" tt="uppercase">
-                                {abbreviateNumber(data.rank.tippedAmountCount + tippedAmount)}
-                              </Text>
-                            </Group>
-                          </InteractiveTipBuzzButton>
-                        </Badge>
-                      )}
-                      {!data.locked && !!data.rank.thumbsUpCount && (
-                        <Badge
-                          className={cx(classes.statChip, classes.chip)}
-                          pl={6}
-                          pr={8}
-                          data-reviewed={hasReview}
-                          radius="xl"
-                          title={`${Math.round(positiveRating * 100)}% of reviews are positive`}
-                        >
-                          <Group spacing={4}>
-                            <Text
-                              color={hasReview ? 'success.5' : 'yellow'}
-                              component="span"
-                              mt={2}
+                          {features.imageGeneration && data.canGenerate && (
+                            <HoverActionButton
+                              label="Create"
+                              size={30}
+                              color="white"
+                              variant="filled"
+                              data-activity="create:model-card"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                generationPanel.open({
+                                  type: 'modelVersion',
+                                  id: data.version.id,
+                                });
+                              }}
                             >
-                              <ThumbsUpIcon size={20} filled={hasReview} strokeWidth={2.5} />
-                            </Text>
-                            <Text size={16} weight={500}>
-                              {abbreviateNumber(data.rank.thumbsUpCount)}
+                              <IconBrush stroke={2.5} size={16} />
+                            </HoverActionButton>
+                          )}
+                          <CivitaiLinkManageButton
+                            modelId={data.id}
+                            modelName={data.name}
+                            modelType={data.type}
+                            hashes={data.hashes}
+                            noTooltip
+                            iconSize={16}
+                          >
+                            {({ color, onClick, icon, label }) => (
+                              <HoverActionButton
+                                onClick={onClick}
+                                label={label}
+                                size={30}
+                                color={color}
+                                variant="filled"
+                                keepIconOnHover
+                              >
+                                {icon}
+                              </HoverActionButton>
+                            )}
+                          </CivitaiLinkManageButton>
+                        </Stack>
+                      </Group>
+                      {safe ? (
+                        <div
+                          className={data.cosmetic ? classes.frameAdjustment : undefined}
+                          style={{ height: '100%' }}
+                        >
+                          <EdgeMedia
+                            src={image.url}
+                            name={image.name ?? image.id.toString()}
+                            alt={
+                              image.meta
+                                ? truncate((image.meta as ImageMetaProps).prompt, {
+                                    length: 125,
+                                  })
+                                : undefined
+                            }
+                            type={image.type}
+                            width={
+                              originalAspectRatio > 1
+                                ? IMAGE_CARD_WIDTH * originalAspectRatio
+                                : IMAGE_CARD_WIDTH
+                            }
+                            placeholder="empty"
+                            className={classes.image}
+                            // loading="lazy"
+                            wrapperProps={{ style: { height: '100%', width: '100%' } }}
+                            anim={shouldAnimateByDefault({
+                              type: image.type,
+                              metadata: image.metadata as VideoMetadata,
+                            })}
+                            contain
+                          />
+                        </div>
+                      ) : (
+                        <div className={classes.blurHash}>
+                          <MediaHash {...image} />
+                        </div>
+                      )}
+                    </>
+                  )}
+                </ImageGuard2>
+              ) : (
+                <Center h="100%">
+                  <Text color="dimmed">This model has no images</Text>
+                </Center>
+              )}
+
+              <Stack className={cx('footer', classes.contentOverlay, classes.bottom)} spacing={5}>
+                {data.user.id !== -1 && <UserAvatarSimple {...data.user} />}
+                <Text className={classes.dropShadow} size="xl" weight={700} lineClamp={3} lh={1.2}>
+                  {data.name}
+                </Text>
+                {data.rank && (
+                  <Group align="center" position="apart" spacing={4}>
+                    {(!!data.rank.downloadCount ||
+                      !!data.rank.collectedCount ||
+                      !!data.rank.tippedAmountCount) && (
+                      <Badge
+                        className={cx(classes.statChip, classes.chip)}
+                        variant="light"
+                        radius="xl"
+                      >
+                        <Group spacing={2}>
+                          <IconDownload size={14} strokeWidth={2.5} />
+                          <Text size="xs">{abbreviateNumber(data.rank.downloadCount)}</Text>
+                        </Group>
+                        <Group spacing={2}>
+                          <IconBookmark size={14} strokeWidth={2.5} />
+                          <Text size="xs">{abbreviateNumber(data.rank.collectedCount)}</Text>
+                        </Group>
+                        <Group spacing={2}>
+                          <IconMessageCircle2 size={14} strokeWidth={2.5} />
+                          <Text size="xs">{abbreviateNumber(data.rank.commentCount)}</Text>
+                        </Group>
+                        <InteractiveTipBuzzButton
+                          toUserId={data.user.id}
+                          entityType={'Model'}
+                          entityId={data.id}
+                        >
+                          <Group spacing={2}>
+                            <IconBolt size={14} strokeWidth={2.5} />
+                            <Text size="xs" tt="uppercase">
+                              {abbreviateNumber(data.rank.tippedAmountCount + tippedAmount)}
                             </Text>
                           </Group>
-                        </Badge>
-                      )}
-                    </Group>
-                  )}
-                </Stack>
-                {onSite && <OnsiteIndicator />}
-              </>
-            )}
-          </div>
+                        </InteractiveTipBuzzButton>
+                      </Badge>
+                    )}
+                    {!data.locked && !!data.rank.thumbsUpCount && (
+                      <Badge
+                        className={cx(classes.statChip, classes.chip)}
+                        pl={6}
+                        pr={8}
+                        data-reviewed={hasReview}
+                        radius="xl"
+                        title={`${Math.round(positiveRating * 100)}% of reviews are positive`}
+                      >
+                        <Group spacing={4}>
+                          <Text color={hasReview ? 'success.5' : 'yellow'} component="span" mt={2}>
+                            <ThumbsUpIcon size={20} filled={hasReview} strokeWidth={2.5} />
+                          </Text>
+                          <Text size={16} weight={500}>
+                            {abbreviateNumber(data.rank.thumbsUpCount)}
+                          </Text>
+                        </Group>
+                      </Badge>
+                    )}
+                  </Group>
+                )}
+              </Stack>
+              {onSite && <OnsiteIndicator />}
+            </>
+          )}
         </div>
-      </FeedCard>
-    </HolidayFrame>
+      </div>
+    </FeedCard>
   );
 }
 

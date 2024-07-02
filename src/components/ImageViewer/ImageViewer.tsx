@@ -1,12 +1,4 @@
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  Dispatch,
-  SetStateAction,
-} from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { z } from 'zod';
 import { useRouter } from 'next/router';
 import { useHotkeys } from '@mantine/hooks';
@@ -16,6 +8,13 @@ import { SimpleUser } from '~/server/selectors/user.selector';
 import { ImageMetaProps } from '~/server/schema/image.schema';
 import { Modal } from '@mantine/core';
 import { NsfwLevel } from '~/server/common/enums';
+import {
+  BadgeCosmetic,
+  ContentDecorationCosmetic,
+  WithClaimKey,
+} from '~/server/selectors/cosmetic.selector';
+import { removeEmpty } from '~/utils/object-helpers';
+import { ImageMetadata, VideoMetadata } from '~/server/schema/media.schema';
 
 type ImageGuardConnect = {
   entityType:
@@ -50,7 +49,9 @@ export interface ImageProps {
   needsReview?: string | null;
   userId?: number;
   user?: SimpleUser;
-  tags?: Array<{ id: number }>;
+  cosmetic?: WithClaimKey<ContentDecorationCosmetic> | null;
+  tags?: Array<{ id: number }> | number[];
+  metadata?: MixedObject | null;
 }
 
 type ImageViewerState = {
@@ -134,17 +135,10 @@ export const ImageViewer = ({ children }: { children: React.ReactNode }) => {
     }
   };
   const onClose = () => {
-    router.replace(
-      {
-        pathname: router.pathname,
-        query: {
-          ...router.query,
-          imageId: undefined,
-        },
-      },
-      undefined,
-      { shallow: true }
-    );
+    if (!activeImageId) return;
+
+    const query = removeEmpty({ ...router.query, imageId: undefined });
+    router.replace({ pathname: router.pathname, query }, undefined, { shallow: true });
   };
 
   useHotkeys([['Escape', onClose]]);
@@ -158,7 +152,7 @@ export const ImageViewer = ({ children }: { children: React.ReactNode }) => {
         setActiveImageId(res.data.imageId ?? null);
       }
     }
-  }, [router?.query]);
+  }, [router.query]);
 
   const activeImageRecord = images.find((i) => i.id === activeImageId);
 

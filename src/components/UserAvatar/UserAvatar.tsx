@@ -1,12 +1,11 @@
 import {
-  ActionIcon,
   Avatar,
   AvatarProps,
   BadgeProps,
-  Center,
   Group,
   Indicator,
   IndicatorProps,
+  Loader,
   MantineNumberSize,
   MantineSize,
   MantineTheme,
@@ -16,18 +15,16 @@ import {
   useMantineTheme,
 } from '@mantine/core';
 import { NextLink } from '@mantine/next';
-
+import { IconUser } from '@tabler/icons-react';
 import { getEdgeUrl } from '~/client-utils/cf-images-utils';
 import { Username } from '~/components/User/Username';
+import { UserAvatarProfilePicture } from '~/components/UserAvatar/UserAvatarProfilePicture';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { UserWithCosmetics } from '~/server/selectors/user.selector';
 import { getInitials } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
 import { EdgeMedia } from '../EdgeMedia/EdgeMedia';
-import { MediaHash } from '../ImageHash/ImageHash';
-import { IconEye, IconEyeOff, IconUser } from '@tabler/icons-react';
-import { ImageGuard2 } from '~/components/ImageGuard/ImageGuard2';
-import { UserAvatarProfilePicture } from '~/components/UserAvatar/UserAvatarProfilePicture';
+import { ContentDecorationCosmetic } from '~/server/selectors/cosmetic.selector';
 
 const mapAvatarTextSize: Record<MantineSize, { textSize: MantineSize; subTextSize: MantineSize }> =
   {
@@ -89,17 +86,27 @@ export function UserAvatar({
   userId,
   indicatorProps,
   badgeSize,
+  withDecorations = true,
+  withOverlay = false,
 }: Props) {
   const currentUser = useCurrentUser();
   const theme = useMantineTheme();
 
-  const { data: fallbackUser } = trpc.user.getById.useQuery(
+  const { data: fallbackUser, isInitialLoading } = trpc.user.getById.useQuery(
     { id: userId as number },
     { enabled: !user && !!userId && userId > -1, cacheTime: Infinity, staleTime: Infinity }
   );
 
-  const avatarUser = user ?? fallbackUser;
+  const avatarUser = user ?? { ...fallbackUser, cosmetics: [] };
 
+  // If using a userId, show loading
+  if (isInitialLoading)
+    return (
+      <Group>
+        <Loader size="sm" />
+        <Text size="sm">Loading user...</Text>
+      </Group>
+    );
   // If no user or user is civitai, return null
   if (!avatarUser || avatarUser.id === -1) return null;
   const userDeleted = !!avatarUser.deletedAt;
@@ -114,9 +121,27 @@ export function UserAvatar({
     theme.colorScheme === 'dark' ? 'rgba(255,255,255,0.31)' : 'rgba(0,0,0,0.31)';
 
   const image = avatarUser.profilePicture;
+  const decoration =
+    withDecorations && avatarUser
+      ? (avatarUser.cosmetics?.find((c) => c.cosmetic?.type === 'ProfileDecoration')
+          ?.cosmetic as Omit<ContentDecorationCosmetic, 'description' | 'obtainedAt' | 'name'>)
+      : undefined;
 
   return (
-    <Group align="center" spacing={spacing} noWrap>
+    <Group
+      align="center"
+      sx={
+        withOverlay
+          ? {
+              padding: '0 10px 0 0',
+              backgroundColor: 'rgba(0, 0, 0, 0.31)',
+              borderRadius: '1000px',
+            }
+          : undefined
+      }
+      spacing={spacing}
+      noWrap
+    >
       {includeAvatar && (
         <UserProfileLink user={avatarUser} linkToProfile={linkToProfile}>
           <Indicator
@@ -127,6 +152,25 @@ export function UserAvatar({
             disabled={!indicatorProps}
             withBorder
           >
+            {decoration && decoration.data.url && (
+              <EdgeMedia
+                src={decoration.data.url}
+                type="image"
+                name="user avatar decoration"
+                style={{
+                  position: 'absolute',
+                  top: '50%',
+                  left: '50%',
+                  maxWidth: 'none',
+                  transform: 'translate(-50%,-50%)',
+                  width: decoration.data.offset ? `calc(100% + ${decoration.data.offset})` : '100%',
+                  height: decoration.data.offset
+                    ? `calc(100% + ${decoration.data.offset})`
+                    : '100%',
+                  zIndex: 1,
+                }}
+              />
+            )}
             {avatarUser.profilePicture &&
             avatarUser.profilePicture.id &&
             !blockedProfilePicture &&
@@ -193,7 +237,13 @@ export function UserAvatar({
           {withUsername && (
             <UserProfileLink user={avatarUser} linkToProfile={linkToProfile}>
               <Group spacing={4} align="center">
-                <Username {...avatarUser} size={textSize} badgeSize={badgeSize} />
+                <Username
+                  username={avatarUser.username}
+                  deletedAt={avatarUser.deletedAt}
+                  cosmetics={(avatarUser as Partial<UserWithCosmetics>).cosmetics ?? []}
+                  size={textSize}
+                  badgeSize={badgeSize}
+                />
                 {badge}
               </Group>
             </UserProfileLink>
@@ -230,9 +280,11 @@ type Props = {
   userId?: number;
   indicatorProps?: Omit<IndicatorProps, 'children'>;
   badgeSize?: number;
+  withDecorations?: boolean;
+  withOverlay?: boolean;
 };
 
-const UserProfileLink = ({
+export const UserProfileLink = ({
   children,
   user,
   linkToProfile,

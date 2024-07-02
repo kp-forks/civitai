@@ -22,7 +22,6 @@ const IMAGE_WHERE: (idOffset: number) => Prisma.Sql[] = (idOffset: number) => [
   Prisma.sql`i."type" = 'image'`,
   Prisma.sql`i."needsReview" IS NULL`,
   Prisma.sql`p."publishedAt" IS NOT NULL`,
-  Prisma.sql`p.metadata->>'unpublishedAt' IS NULL`,
   Prisma.sql`p."availability" != 'Private'::"Availability"`,
 ];
 
@@ -98,7 +97,7 @@ const updateUserDetails = (idOffset: number) =>
         FROM "UserCosmetic" uc
         JOIN "Cosmetic" c ON c.id = uc."cosmeticId"
         AND "equippedAt" IS NOT NULL
-        WHERE uc."userId" IN (SELECT "userId" FROM target)
+        WHERE uc."userId" IN (SELECT "userId" FROM target) AND uc."equippedToId" IS NULL
         GROUP BY uc."userId"
       )
       SELECT

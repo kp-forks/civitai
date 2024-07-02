@@ -1,7 +1,8 @@
-import { ModelStatus, ReportReason, ReportStatus } from '@prisma/client';
+import { ModelStatus, Prisma, ReportReason, ReportStatus } from '@prisma/client';
 import { TRPCError } from '@trpc/server';
 
 import { Context } from '~/server/createContext';
+import { reportAcceptedReward } from '~/server/rewards';
 import { GetByIdInput } from '~/server/schema/base.schema';
 import {
   CommentUpsertInput,
@@ -45,6 +46,19 @@ export const getCommentsInfiniteHandler = async ({
     select: getAllCommentsSelect,
   });
 
+  const commentIds = comments.map((c) => c.id);
+  if (commentIds.length === 0) return { comments: [], nextCursor: undefined };
+
+  const counts = await dbRead.$queryRaw<{ id: number; count: number }[]>`
+    SELECT
+      c."parentId" as id,
+      COUNT(c.id) as count
+    FROM "Comment" c
+    WHERE c."parentId" IN (${Prisma.join(commentIds)})
+    GROUP BY c."parentId"
+  `;
+  const countsMap = Object.fromEntries(counts.map((c) => [c.id, Number(c.count)]));
+
   let nextCursor: number | undefined;
   if (comments.length > input.limit) {
     const nextItem = comments.pop();
@@ -53,7 +67,10 @@ export const getCommentsInfiniteHandler = async ({
 
   return {
     nextCursor,
-    comments,
+    comments: comments.map((c) => ({
+      ...c,
+      _count: { comments: countsMap[c.id] ?? 0 },
+    })),
   };
 };
 
@@ -289,11 +306,16 @@ export const setTosViolationHandler = async ({
     const updatedComment = await updateCommentById({ id, data: { tosViolation: true } });
     if (!updatedComment) throw throwNotFoundError(`No comment with id ${id}`);
 
-    await updateCommentReportStatusByReason({
+    // Update all reports with this comment id to actioned
+    const affectedReports = await updateCommentReportStatusByReason({
       id: updatedComment.id,
       reason: ReportReason.TOSViolation,
       status: ReportStatus.Actioned,
     });
+    // Reward users for accepted reports
+    for (const report of affectedReports) {
+      reportAcceptedReward.apply({ userId: report.userId, reportId: report.id }, '');
+    }
 
     // Create notifications in the background
     createNotification({

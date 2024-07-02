@@ -1,31 +1,56 @@
 import {
   Availability,
   CollectionContributorPermission,
+  CollectionMode,
   CollectionReadConfiguration,
+  CollectionType,
   Prisma,
   TagTarget,
   TagType,
 } from '@prisma/client';
 import { SessionUser } from 'next-auth';
-import { NsfwLevel, PostSort } from '~/server/common/enums';
+import { env } from '~/env/server.mjs';
+import { PostSort } from '~/server/common/enums';
 import { getImageGenerationProcess } from '~/server/common/model-helpers';
 import { dbRead, dbWrite } from '~/server/db/client';
+import { getDbWithoutLag, preventReplicationLag } from '~/server/db/db-helpers';
+import { logToAxiom } from '~/server/logging/client';
 import { GetByIdInput } from '~/server/schema/base.schema';
-import { ImageMetaProps, getInfiniteImagesSchema } from '~/server/schema/image.schema';
-import { editPostImageSelect } from '~/server/selectors/post.selector';
+import { externalMetaSchema } from '~/server/schema/image.schema';
+import { ContentDecorationCosmetic, WithClaimKey } from '~/server/selectors/cosmetic.selector';
+import {
+  editPostImageSelect,
+  PostImageEditProps,
+  PostImageEditSelect,
+  postSelect,
+} from '~/server/selectors/post.selector';
 import { simpleTagSelect } from '~/server/selectors/tag.selector';
-import { userWithCosmeticsSelect } from '~/server/selectors/user.selector';
-import { getUserCollectionPermissionsById } from '~/server/services/collection.service';
+import {
+  getCollectionById,
+  getUserCollectionPermissionsById,
+} from '~/server/services/collection.service';
+import { getCosmeticsForEntity } from '~/server/services/cosmetic.service';
 import {
   deleteImageById,
   deleteImagesForModelVersionCache,
   getImagesForPosts,
   ingestImage,
+  purgeImageGenerationDataCache,
+  purgeResizeCache,
 } from '~/server/services/image.service';
-import { getTagCountForImages, getTypeCategories } from '~/server/services/tag.service';
+import { findOrCreateTagsByName, getVotableImageTags } from '~/server/services/tag.service';
+import { getToolByDomain, getToolByName } from '~/server/services/tool.service';
 import { getCosmeticsForUsers, getProfilePicturesForUsers } from '~/server/services/user.service';
-import { throwDbError, throwNotFoundError } from '~/server/utils/errorHandling';
+import { bustCacheTag, queryCache } from '~/server/utils/cache-helpers';
+import {
+  throwAuthorizationError,
+  throwDbError,
+  throwNotFoundError,
+} from '~/server/utils/errorHandling';
+import { PreprocessFileReturnType } from '~/utils/media-preprocessors';
+import { postgresSlugify } from '~/utils/string-helpers';
 import { isDefined } from '~/utils/type-guards';
+import { CacheTTL } from '../common/constants';
 import {
   AddPostImageInput,
   AddPostTagInput,
@@ -37,11 +62,6 @@ import {
   ReorderPostImagesInput,
   UpdatePostImageInput,
 } from './../schema/post.schema';
-import { editPostSelect } from './../selectors/post.selector';
-import { postgresSlugify } from '~/utils/string-helpers';
-import { bustCacheTag, queryCache } from '~/server/utils/cache-helpers';
-import { env } from 'process';
-import { CacheTTL } from '../common/constants';
 
 type GetAllPostsRaw = {
   id: number;
@@ -66,6 +86,7 @@ type GetAllPostsRaw = {
     laughCount: number;
     cryCount: number;
   } | null;
+  cosmetic?: WithClaimKey<ContentDecorationCosmetic> | null;
 };
 export type PostsInfiniteModel = AsyncReturnType<typeof getPostsInfinite>['items'][0];
 export const getPostsInfinite = async ({
@@ -98,6 +119,7 @@ export const getPostsInfinite = async ({
   let cacheTime = CacheTTL.xs;
   const userId = user?.id;
   const isModerator = user?.isModerator ?? false;
+  const includeCosmetics = !!include?.includes('cosmetics');
 
   const isOwnerRequest =
     !!user?.username && !!username && postgresSlugify(user.username) === postgresSlugify(username);
@@ -148,7 +170,6 @@ export const getPostsInfinite = async ({
   const joins: string[] = [];
   if (!isOwnerRequest) {
     AND.push(Prisma.sql`p."publishedAt" < now()`);
-    AND.push(Prisma.sql`p.metadata->>'unpublishedAt' IS NULL`);
 
     if (period !== 'AllTime' && periodMode !== 'stats') {
       AND.push(Prisma.raw(`p."publishedAt" > now() - INTERVAL '1 ${period.toLowerCase()}'`));
@@ -166,7 +187,6 @@ export const getPostsInfinite = async ({
   } else {
     if (draftOnly) AND.push(Prisma.sql`p."publishedAt" IS NULL`);
     else AND.push(Prisma.sql`p."publishedAt" IS NOT NULL`);
-    AND.push(Prisma.sql`p.metadata->>'unpublishedAt' IS NULL`);
   }
 
   if (browsingLevel) {
@@ -326,9 +346,10 @@ export const getPostsInfinite = async ({
 
   // Get user cosmetics
   const userIds = postsRaw.map((i) => i.userId);
-  const userCosmetics = include?.includes('cosmetics')
-    ? await getCosmeticsForUsers(userIds)
-    : undefined;
+  const userCosmetics = includeCosmetics ? await getCosmeticsForUsers(userIds) : undefined;
+  const cosmetics = includeCosmetics
+    ? await getCosmeticsForEntity({ ids: postsRaw.map((p) => p.id), entity: 'Post' })
+    : {};
 
   const profilePictures = await getProfilePicturesForUsers(userIds);
 
@@ -411,37 +432,24 @@ export const getPostsInfinite = async ({
           },
           stats,
           images: _images,
+          cosmetic: cosmetics[post.id] ?? null,
         };
       })
       .filter((x) => x.imageCount !== 0),
   };
 };
 
+export type PostDetail = AsyncReturnType<typeof getPostDetail>;
 export const getPostDetail = async ({ id, user }: GetByIdInput & { user?: SessionUser }) => {
-  const post = await dbRead.post.findFirst({
+  const db = await getDbWithoutLag('post', id);
+  const post = await db.post.findFirst({
     where: {
       id,
       OR: user?.isModerator
         ? undefined
-        : [
-            { publishedAt: { lt: new Date() } },
-            { userId: user?.id },
-            { modelVersionId: null },
-            { modelVersion: { status: 'Published' } },
-          ],
-      // modelVersion: user?.isModerator ? undefined : { status: 'Published' },
+        : [{ userId: user?.id }, { publishedAt: { lt: new Date() }, nsfwLevel: { not: 0 } }],
     },
-    select: {
-      id: true,
-      nsfwLevel: true,
-      title: true,
-      detail: true,
-      modelVersionId: true,
-      user: { select: userWithCosmeticsSelect },
-      publishedAt: true,
-      availability: true,
-      tags: { select: { tag: { select: simpleTagSelect } } },
-    },
+    select: postSelect,
   });
 
   if (!post) throw throwNotFoundError();
@@ -453,75 +461,87 @@ export const getPostDetail = async ({ id, user }: GetByIdInput & { user?: Sessio
   };
 };
 
-export const getPostEditDetail = async ({ id }: GetByIdInput) => {
-  const postRaw = await dbWrite.post.findUnique({
-    where: { id },
-    select: editPostSelect,
+export type PostDetailEditable = AsyncReturnType<typeof getPostEditDetail>;
+export const getPostEditDetail = async ({ id, user }: GetByIdInput & { user: SessionUser }) => {
+  const post = await getPostDetail({ id, user });
+  if (post.user.id !== user.id && !user.isModerator) throw throwAuthorizationError();
+  const images = await getPostEditImages({ id, user });
+
+  return { ...post, images };
+};
+
+async function combinePostEditImageData(images: PostImageEditSelect[], user: SessionUser) {
+  const imageIds = images.map((x) => x.id);
+  const _images = images as PostImageEditProps[];
+  const tags = await getVotableImageTags({ ids: imageIds, user });
+  return _images
+    .map((image) => ({
+      ...image,
+      metadata: image.metadata as PreprocessFileReturnType['metadata'],
+      tags: tags.filter((x) => x.imageId === image.id),
+      tools: image.tools.map(({ notes, tool }) => ({ ...tool, notes })),
+      techniques: image.techniques.map(({ notes, technique }) => ({ ...technique, notes })),
+    }))
+    .sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+}
+
+export type PostImageEditable = AsyncReturnType<typeof getPostEditImages>[number];
+export const getPostEditImages = async ({ id, user }: GetByIdInput & { user: SessionUser }) => {
+  const db = await getDbWithoutLag('postImages', id);
+  const images = await db.image.findMany({
+    where: { postId: id },
+    select: editPostImageSelect,
   });
-  if (!postRaw) throw throwNotFoundError();
-
-  const { images: rawImages, ...post } = postRaw;
-  const imageIds = rawImages.map((x) => x.id);
-  const imageTagCounts = await getTagCountForImages(imageIds);
-  const images = rawImages.map((x) => ({
-    ...x,
-    meta: x.meta as ImageMetaProps | null,
-    _count: { tags: imageTagCounts[x.id] },
-  }));
-
-  const castedPost = {
-    ...post,
-    images,
-  };
-
-  return {
-    ...castedPost,
-    tags: castedPost.tags.flatMap((x) => x.tag),
-  };
+  return combinePostEditImageData(images, user);
 };
 
 export const createPost = async ({
   userId,
   tag,
+  tags,
   ...data
-}: PostCreateInput & { userId: number }) => {
-  const rawResult = await dbWrite.post.create({
-    data: { ...data, userId, tags: tag ? { create: { tagId: tag } } : undefined },
-    select: editPostSelect,
-  });
-  const imageIds = rawResult.images.map((x) => x.id);
-  const imageTagCounts = await getTagCountForImages(imageIds);
-  const images = rawResult.images.map((x) => ({
-    ...x,
-    meta: x.meta as ImageMetaProps,
-    _count: { tags: imageTagCounts[x.id] },
-  }));
+}: PostCreateInput & {
+  userId: number;
+}): Promise<PostDetailEditable> => {
+  const tagsToAdd: number[] = [];
+  if (tags && tags.length > 0) {
+    const tagObj = await findOrCreateTagsByName(tags);
+    Object.values(tagObj).forEach((t) => {
+      if (t !== undefined) tagsToAdd.push(t);
+    });
+  }
+  if (tag) {
+    tagsToAdd.push(tag);
+  }
+  const tagData = tagsToAdd.map((t) => ({ tagId: t }));
 
-  const result = {
-    ...rawResult,
-    images,
-  };
+  const post = await dbWrite.post.create({
+    data: { ...data, userId, tags: tagsToAdd.length > 0 ? { create: tagData } : undefined },
+    select: postSelect,
+  });
+  await preventReplicationLag('post', post.id);
 
   return {
-    ...result,
-    tags: result.tags.flatMap((x) => x.tag),
+    ...post,
+    tags: post.tags.flatMap((x) => x.tag),
+    images: [] as PostImageEditable[],
   };
 };
 
 export const updatePost = async ({
   id,
-  userId,
-  isModerator,
+  user,
   ...data
-}: PostUpdateInput & { userId?: number; isModerator?: boolean }) => {
+}: PostUpdateInput & { user: SessionUser }) => {
   const post = await dbWrite.post.update({
-    where: { id },
+    where: { id, userId: !user.isModerator ? user.id : undefined },
     data: {
       ...data,
-      title: data.title !== undefined ? (data.title.length > 0 ? data.title : null) : undefined,
-      detail: data.detail !== undefined ? (data.detail.length > 0 ? data.detail : null) : undefined,
+      title: !!data.title ? (data.title.length > 0 ? data.title : null) : undefined,
+      detail: !!data.detail ? (data.detail.length > 0 ? data.detail : null) : undefined,
     },
   });
+  await preventReplicationLag('post', post.id);
 
   return post;
 };
@@ -532,12 +552,13 @@ export const deletePost = async ({ id }: GetByIdInput) => {
     for (const image of images) await deleteImageById({ id: image.id, updatePost: false });
   }
 
-  await dbWrite.clubPost.deleteMany({
-    where: { entityId: id, entityType: 'Post' },
-  });
-
   await bustCachesForPost(id);
-  await dbWrite.post.delete({ where: { id } });
+  const [result] = await dbWrite.$queryRaw<{ id: number; nsfwLevel: number }[]>`
+    DELETE FROM "Post"
+    WHERE id = ${id}
+    RETURNING id, "nsfwLevel"
+  `;
+  return result;
 };
 
 type PostQueryResult = { id: number; name: string; isCategory: boolean; postCount: number }[];
@@ -545,30 +566,28 @@ export const getPostTags = async ({
   query,
   limit,
   excludedTagIds,
+  nsfwLevel,
 }: GetPostTagsInput & { excludedTagIds?: number[] }) => {
   const showTrending = query === undefined || query.length < 2;
   const tags = await dbRead.$queryRaw<PostQueryResult>`
-    SELECT
-      t.id,
-      t.name,
-      (
-        SELECT COALESCE(
-        (
-            SELECT MAX(pt."nsfwLevel")
-            FROM "TagsOnTags" tot
-            JOIN "Tag" pt ON tot."fromTagId" = pt.id
-            WHERE tot."toTagId" = t.id
-        ), t."nsfwLevel") "nsfwLevel"
-      ) "nsfwLevel",
-      t."isCategory",
-      COALESCE(${
-        showTrending ? Prisma.sql`s."postCountWeek"` : Prisma.sql`s."postCountAllTime"`
-      }, 0)::int AS "postCount"
+    SELECT t.id,
+           t.name,
+           (SELECT COALESCE(
+                     (SELECT MAX(pt."nsfwLevel")
+                      FROM "TagsOnTags" tot
+                             JOIN "Tag" pt ON tot."fromTagId" = pt.id
+                      WHERE tot."toTagId" = t.id), t."nsfwLevel") "nsfwLevel") "nsfwLevel",
+           t."isCategory",
+           COALESCE(${
+             showTrending ? Prisma.sql`s."postCountWeek"` : Prisma.sql`s."postCountAllTime"`
+           }, 0)::int AS                                                       "postCount"
     FROM "Tag" t
-    LEFT JOIN "TagStat" s ON s."tagId" = t.id
-    LEFT JOIN "TagRank" r ON r."tagId" = t.id
-    WHERE
-      ${showTrending ? Prisma.sql`t."isCategory" = true` : Prisma.sql`t.name ILIKE ${query + '%'}`}
+           LEFT JOIN "TagStat" s ON s."tagId" = t.id
+           LEFT JOIN "TagRank" r ON r."tagId" = t.id
+    WHERE ${
+      showTrending ? Prisma.sql`t."isCategory" = true` : Prisma.sql`t.name ILIKE ${query + '%'}`
+    }
+            ${nsfwLevel ? Prisma.sql`AND (t."nsfwLevel" & ${nsfwLevel}) != 0` : ``}
     ORDER BY ${Prisma.raw(
       showTrending ? `r."postCountWeekRank" ASC` : `r."postCountAllTimeRank" ASC`
     )}
@@ -580,7 +599,7 @@ export const getPostTags = async ({
   ).sort((a, b) => b.postCount - a.postCount);
 };
 
-export const addPostTag = async ({ tagId, id: postId, name: initialName }: AddPostTagInput) => {
+export const addPostTag = async ({ id: postId, name: initialName }: AddPostTagInput) => {
   const name = initialName.toLowerCase().trim();
   return await dbWrite.$transaction(async (tx) => {
     const tag = await tx.tag.findUnique({
@@ -624,21 +643,100 @@ export const removePostTag = ({ tagId, id: postId }: RemovePostTagInput) => {
   return dbWrite.tagsOnPost.delete({ where: { tagId_postId: { tagId, postId } } });
 };
 
+const log = (data: MixedObject) => {
+  logToAxiom({ name: 'post-service', type: 'error', ...data }).catch();
+};
+
+const DETAIL_LIMIT = 10;
+
+const parseExternalMetadata = async (src: string | undefined, user: number) => {
+  if (!src) return;
+
+  const srcUrl = new URL(src);
+  if (!env.POST_INTENT_DETAILS_HOSTS || !env.POST_INTENT_DETAILS_HOSTS.includes(srcUrl.origin)) {
+    return log({ user, message: 'This domain is not approved for external parsing.', domain: src });
+  }
+
+  let respJson;
+  try {
+    const response = await fetch(src);
+    respJson = await response.json();
+  } catch (e) {
+    return log({ user, message: 'Failure fetching JSON data from external URL.', domain: src });
+  }
+
+  const detailParse = externalMetaSchema.safeParse(respJson);
+  if (!detailParse.success) {
+    return log({
+      user,
+      message: 'Failure parsing JSON data from external URL.',
+      domain: src,
+      issues: detailParse.error.issues,
+    });
+  }
+
+  // TODO it is possible we will eventually want to do some test of mediaUrl domain = detailsUrl domain
+  //  but that can cause problems for different cdns vs apis.
+  //  Another option is putting the mediaUrl into the detailsUrl structure
+  //  but that can impose extra work if the partner just wants to put their name and homepage on everything
+  //  and not worry about having to modify the API to include each URL
+
+  const { data: detailData } = detailParse;
+
+  if (!!detailData.details) {
+    const detailLength = Object.keys(detailData.details).length;
+    if (detailLength > DETAIL_LIMIT) {
+      return log({
+        user,
+        message: 'Too many keys in "details" for external data.',
+        domain: src,
+        found: detailLength,
+      });
+    }
+  }
+
+  return detailData;
+};
+
 export const addPostImage = async ({
   modelVersionId,
   meta,
+  user,
+  externalDetailsUrl,
   ...props
-}: AddPostImageInput & { userId: number }) => {
+}: AddPostImageInput & { user: SessionUser }) => {
+  const externalData = await parseExternalMetadata(externalDetailsUrl, user.id);
+  if (externalData) {
+    meta = { ...meta, external: externalData };
+  }
+
+  let toolId: number | undefined;
+  const { name: sourceName, homepage: sourceHomepage } = meta?.external?.source ?? {};
+  if (sourceName || sourceHomepage) {
+    if (sourceName) {
+      toolId = (await getToolByName(sourceName))?.id;
+    }
+    if (sourceHomepage && !toolId) {
+      toolId = (await getToolByDomain(sourceHomepage))?.id;
+    }
+  }
+
   const partialResult = await dbWrite.image.create({
     data: {
       ...props,
-      meta: (meta as Prisma.JsonObject) ?? Prisma.JsonNull,
+      userId: user.id,
+      meta: meta !== null ? (meta as Prisma.JsonObject) : Prisma.JsonNull,
       generationProcess: meta ? getImageGenerationProcess(meta as Prisma.JsonObject) : null,
+      tools: toolId ? { create: { toolId } } : undefined,
     },
     select: { id: true },
   });
 
-  await dbWrite.$executeRaw`SELECT insert_image_resource(${partialResult.id}::int)`;
+  try {
+    await dbWrite.$executeRaw`SELECT insert_image_resource(${partialResult.id}::int)`;
+  } catch (e) {
+    console.error(e);
+  }
   await ingestImage({
     image: {
       id: partialResult.id,
@@ -649,15 +747,16 @@ export const addPostImage = async ({
     },
   });
 
-  const image = await dbWrite.image.findUnique({
+  const result = await dbWrite.image.findUnique({
     where: { id: partialResult.id },
     select: editPostImageSelect,
   });
-  if (!image) throw throwDbError(`Image not found`);
+  if (!result) throw throwDbError(`Image not found`);
+  const [image] = await combinePostEditImageData([result], user);
 
   const modelVersionIds = image.resourceHelper.map((r) => r.modelVersionId).filter(isDefined);
   // Cache Busting
-  await bustCacheTag(`images-user:${props.userId}`);
+  await bustCacheTag(`images-user:${user.id}`);
   if (!!modelVersionIds.length) {
     for (const modelVersionId of modelVersionIds) {
       await bustCacheTag(`images-modelVersion:${modelVersionId}`);
@@ -672,6 +771,7 @@ export const addPostImage = async ({
     }
   }
 
+  await preventReplicationLag('postImages', props.postId);
   await bustCachesForPost(props.postId);
 
   return image;
@@ -679,12 +779,11 @@ export const addPostImage = async ({
 
 export async function bustCachesForPost(postId: number) {
   const [result] = await dbRead.$queryRaw<{ isShowcase: boolean; modelVersionId: number }[]>`
-    SELECT
-      m."userId" = p."userId" as "isShowcase",
-      p."modelVersionId"
+    SELECT m."userId" = p."userId" as "isShowcase",
+           p."modelVersionId"
     FROM "Post" p
-    JOIN "ModelVersion" mv ON mv."id" = p."modelVersionId"
-    JOIN "Model" m ON m."id" = mv."modelId"
+           JOIN "ModelVersion" mv ON mv."id" = p."modelVersionId"
+           JOIN "Model" m ON m."id" = mv."modelId"
     WHERE p."id" = ${postId}
   `;
 
@@ -694,30 +793,26 @@ export async function bustCachesForPost(postId: number) {
 }
 
 export const updatePostImage = async (image: UpdatePostImageInput) => {
-  // const updateResources = image.resources.filter(isImageResource);
-  // const createResources = image.resources.filter(isNotImageResource);
+  const currentImage = await dbWrite.image.findUnique({
+    where: { id: image.id },
+    select: { hideMeta: true },
+  });
 
-  const rawResult = await dbWrite.image.update({
+  const result = await dbWrite.image.update({
     where: { id: image.id },
     data: {
       ...image,
-      meta: (image.meta as Prisma.JsonObject) ?? Prisma.JsonNull,
-      // resources: {
-      //   deleteMany: {
-      //     NOT: updateResources.map((r) => ({ id: r.id })),
-      //   },
-      //   createMany: { data: createResources.map((r) => ({ modelVersionId: r.id, name: r.name })) },
-      // },
+      meta: image.meta !== null ? (image.meta as Prisma.JsonObject) : Prisma.JsonNull,
     },
-    select: editPostImageSelect,
+    select: { id: true, url: true },
   });
-  const imageTags = await getTagCountForImages([image.id]);
 
-  return {
-    ...rawResult,
-    meta: rawResult.meta as ImageMetaProps | null,
-    _count: { tags: imageTags[image.id] },
-  };
+  // If changing hide meta, purge the resize cache so that we strip metadata
+  if (image.hideMeta && currentImage && currentImage.hideMeta !== image.hideMeta) {
+    await purgeResizeCache({ url: result.url });
+  }
+
+  purgeImageGenerationDataCache(image.id);
 };
 
 export const reorderPostImages = async ({ id: postId, imageIds }: ReorderPostImagesInput) => {
@@ -747,4 +842,48 @@ export const updatePostNsfwLevel = async (ids: number | number[]) => {
     -- Update post NSFW level
     SELECT update_post_nsfw_levels(ARRAY[${ids.join(',')}]);
   `);
+};
+
+export const getPostContestCollectionDetails = async ({ id }: GetByIdInput) => {
+  const post = await dbRead.post.findUnique({
+    where: { id },
+    select: { collectionId: true, userId: true },
+  });
+
+  if (!post || !post.collectionId) return [];
+
+  const collection = await getCollectionById({ input: { id: post.collectionId } });
+
+  if (!collection || collection?.mode !== CollectionMode?.Contest) return [];
+
+  const isImageCollection = collection.type === CollectionType.Image;
+
+  const images = isImageCollection
+    ? await dbRead.image.findMany({
+        where: { postId: id },
+      })
+    : [];
+
+  const items = await dbRead.collectionItem.findMany({
+    where: {
+      collectionId: post.collectionId,
+      postId: isImageCollection ? undefined : id,
+      imageId: isImageCollection ? { in: images.map((i) => i.id) } : undefined,
+    },
+    select: {
+      postId: true,
+      imageId: true,
+      status: true,
+      createdAt: true,
+      reviewedAt: true,
+      tag: true,
+    },
+  });
+
+  return items.map((item) => {
+    return {
+      ...item,
+      collection,
+    };
+  });
 };

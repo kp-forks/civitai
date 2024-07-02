@@ -6,11 +6,12 @@ import {
   ReviewReactions,
 } from '@prisma/client';
 import { z } from 'zod';
+import { SearchIndexEntityTypes } from '~/components/Search/parsers/base';
 import { constants } from '~/server/common/constants';
 import { baseQuerySchema, paginationSchema, periodModeSchema } from '~/server/schema/base.schema';
-import { ImageSort, NsfwLevel } from './../common/enums';
-import { SearchIndexEntityTypes } from '~/components/Search/parsers/base';
 import { zc } from '~/utils/schema-helpers';
+import { ImageSort, NsfwLevel } from './../common/enums';
+import dayjs from 'dayjs';
 
 const stringToNumber = z.coerce.number().optional();
 
@@ -33,6 +34,50 @@ export const comfyMetaSchema = z
   })
   .partial();
 
+// TODO do we need mediaUrl in here to confirm?
+export const externalMetaSchema = z.object({
+  /**
+   * Name and/or homepage for your service
+   */
+  source: z
+    .object({
+      /**
+       * Name of your service
+       */
+      name: z.string().optional(),
+      /**
+       * Your service's home URL
+       */
+      homepage: z.string().url().optional(),
+    })
+    .optional(),
+  /**
+   * Key-value object for custom parameters specific to your service.
+   * Limited to 10 props
+   */
+  details: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+  // details: z.record(z.string(), z.coerce.string()).optional(),
+  /**
+   * Link back to the URL used to create the media
+   */
+  createUrl: z.string().url().optional(),
+  /**
+   * URL to link back to the source of the media
+   */
+  referenceUrl: z.string().url().optional(),
+});
+export type ExternalMetaSchema = z.infer<typeof externalMetaSchema>;
+
+export const baseImageMetaSchema = z.object({
+  prompt: z.string().optional(),
+  negativePrompt: z.string().optional(),
+  cfgScale: z.coerce.number().optional(),
+  steps: z.coerce.number().optional(),
+  sampler: z.string().optional(),
+  seed: z.coerce.number().optional(),
+  clipSkip: z.coerce.number().optional(),
+});
+
 export const imageGenerationSchema = z.object({
   prompt: undefinedString,
   negativePrompt: undefinedString,
@@ -44,9 +89,27 @@ export const imageGenerationSchema = z.object({
   clipSkip: z.coerce.number().optional(),
   'Clip skip': z.coerce.number().optional(),
   comfy: z.union([z.string().optional(), comfyMetaSchema.optional()]).optional(), // stored as stringified JSON
+  external: externalMetaSchema.optional(),
 });
 
 export const imageMetaSchema = imageGenerationSchema.partial().passthrough();
+export const imageMetaOutput = imageGenerationSchema
+  .extend({
+    comfy: z.preprocess((value) => {
+      if (typeof value !== 'string') return value;
+      try {
+        let rVal = value.replace('"workflow": undefined', '"workflow": {}');
+        rVal = rVal.replace('[NaN]', '[]');
+        return JSON.parse(rVal);
+      } catch {
+        return {};
+      }
+    }, comfyMetaSchema.optional()),
+    controlNets: z.string().array().optional(),
+    software: z.coerce.string().optional(),
+    civitaiResources: z.any().optional(),
+  })
+  .passthrough();
 
 export type FaceDetectionInput = z.infer<typeof faceDetectionSchema>;
 export const faceDetectionSchema = z.object({
@@ -86,14 +149,15 @@ export const isNotImageResource = (
 
 export type CreateImageSchema = z.infer<typeof createImageSchema>;
 export const createImageSchema = z.object({
+  entityId: z.number().optional(),
+  entityType: imageEntitiesSchema.optional(),
   id: z.number().optional(),
   name: z.string().nullish(),
   url: z.string().url().or(z.string().uuid()),
   hash: z.string().nullish(),
   height: z.number().nullish(),
   width: z.number().nullish(),
-  entityId: z.number().optional(),
-  entityType: imageEntitiesSchema.optional(),
+  postId: z.number().nullish(),
   modelVersionId: z.number().optional(),
   index: z.number().optional(),
   mimeType: z.string().optional(),
@@ -123,11 +187,11 @@ export const imageSchema = z.object({
   width: z.number().nullish(),
   // analysis: imageAnalysisSchema.optional(),
   // tags: z.array(tagSchema).optional(),
-  needsReview: z.string().nullish(),
+  // needsReview: z.string().nullish(),
   mimeType: z.string().optional(),
   sizeKB: z.number().optional(),
   postId: z.number().nullish(),
-  resources: z.array(imageResourceUpsertSchema).optional(),
+  // resources: z.array(imageResourceUpsertSchema).optional(),
   type: z.nativeEnum(MediaType).default(MediaType.image),
   metadata: z.object({}).passthrough().optional(),
 });
@@ -155,7 +219,7 @@ export const imageModerationSchema = z.object({
   ids: z.number().array(),
   needsReview: z.string().nullish(),
   reviewAction: z.enum(['delete', 'removeName', 'mistake']).optional(),
-  reviewType: z.enum(['minor', 'poi', 'reported', 'csam', 'blocked']),
+  reviewType: z.enum(['minor', 'poi', 'reported', 'csam', 'blocked', 'tag']),
 });
 export type ImageModerationSchema = z.infer<typeof imageModerationSchema>;
 
@@ -190,7 +254,6 @@ export const ingestImageSchema = z.object({
   width: z.coerce.number().nullish(),
 });
 
-// #region [new schemas]
 const imageInclude = z.enum([
   'tags',
   'count',
@@ -207,11 +270,19 @@ export type GetInfiniteImagesOutput = z.output<typeof getInfiniteImagesSchema>;
 export const getInfiniteImagesSchema = baseQuerySchema
   .extend({
     limit: z.number().min(0).max(200).default(100),
-    cursor: z.union([z.bigint(), z.number(), z.string(), z.date()]).optional(),
+    cursor: z
+      .union([z.bigint(), z.number(), z.string(), z.date()])
+      .transform((val) =>
+        typeof val === 'string' && dayjs(val, 'YYYY-MM-DDTHH:mm:ss.SSS[Z]', true).isValid()
+          ? new Date(val)
+          : val
+      )
+      .optional(),
     skip: z.number().optional(),
     postId: z.number().optional(),
     postIds: z.number().array().optional(),
     collectionId: z.number().optional(),
+    collectionTagId: z.number().optional(),
     modelId: z.number().optional(),
     modelVersionId: z.number().optional(),
     imageId: z.number().optional(),
@@ -239,6 +310,9 @@ export const getInfiniteImagesSchema = baseQuerySchema
     fromPlatform: z.coerce.boolean().optional(),
     notPublished: z.coerce.boolean().optional(),
     pending: z.boolean().optional(),
+    tools: z.number().array().optional(),
+    techniques: z.number().array().optional(),
+    baseModels: z.enum(constants.baseModels).array().optional(),
   })
   .transform((value) => {
     if (value.withTags) {
@@ -259,7 +333,6 @@ export const getImageSchema = z.object({
   // excludedTagIds: z.array(z.number()).optional(),
   // excludedUserIds: z.array(z.number()).optional(),
 });
-// #endregion
 
 export type RemoveImageResourceSchema = z.infer<typeof removeImageResourceSchema>;
 export const removeImageResourceSchema = z.object({
@@ -271,7 +344,7 @@ export type GetEntitiesCoverImage = z.infer<typeof getEntitiesCoverImage>;
 export const getEntitiesCoverImage = z.object({
   entities: z.array(
     z.object({
-      entityType: z.union([z.nativeEnum(SearchIndexEntityTypes), z.enum(['ModelVersion'])]),
+      entityType: z.union([z.nativeEnum(SearchIndexEntityTypes), z.enum(['ModelVersion', 'Post'])]),
       entityId: z.number(),
     })
   ),
@@ -312,3 +385,38 @@ export const imageRatingReviewInput = z.object({
   limit: z.number(),
   cursor: z.string().optional(),
 });
+
+export type ReportCsamImagesInput = z.infer<typeof reportCsamImagesSchema>;
+export const reportCsamImagesSchema = z.object({
+  imageIds: z.array(z.number()).min(1),
+});
+
+// #region [image tools]
+const baseImageToolSchema = z.object({
+  imageId: z.number(),
+  toolId: z.number(),
+});
+export type AddOrRemoveImageToolsOutput = z.output<typeof addOrRemoveImageToolsSchema>;
+export const addOrRemoveImageToolsSchema = z.object({ data: baseImageToolSchema.array() });
+
+export type UpdateImageToolsOutput = z.output<typeof updateImageToolsSchema>;
+export const updateImageToolsSchema = z.object({
+  data: baseImageToolSchema.extend({ notes: z.string().nullish() }).array(),
+});
+// #endregion
+
+// #region [image tools]
+const baseImageTechniqueSchema = z.object({
+  imageId: z.number(),
+  techniqueId: z.number(),
+});
+export type AddOrRemoveImageTechniquesOutput = z.output<typeof addOrRemoveImageTechniquesSchema>;
+export const addOrRemoveImageTechniquesSchema = z.object({
+  data: baseImageTechniqueSchema.array(),
+});
+
+export type UpdateImageTechniqueOutput = z.output<typeof updateImageTechniqueSchema>;
+export const updateImageTechniqueSchema = z.object({
+  data: baseImageTechniqueSchema.extend({ notes: z.string().nullish() }).array(),
+});
+// #endregion

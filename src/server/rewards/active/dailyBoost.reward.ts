@@ -5,14 +5,14 @@ export const dailyBoostReward = createBuzzEvent({
   type: 'dailyBoost',
   description: 'For claiming daily boost rewards',
   triggerDescription: 'By claiming it daily in the Image generator',
-  awardAmount: 50,
-  cap: 50,
+  awardAmount: 25,
+  cap: 25,
   onDemand: true,
   getKey: async (input: DailyBoostInput) => {
-    const date = dayjs().startOf('day').format('YYYY-MM-DD');
+    const date = +dayjs().startOf('day').format('YYYYMMDD');
     return {
       toUserId: input.userId,
-      forId: date,
+      forId: date, // Must be a number
       byUserId: input.userId,
       type: `dailyBoost`,
     };
