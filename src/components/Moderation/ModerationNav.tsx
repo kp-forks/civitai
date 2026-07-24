@@ -131,7 +131,12 @@ export function ModerationNav() {
           <IconBadge />
         </LegacyActionIcon>
       </Menu.Target>
-      <Menu.Dropdown>{menuItems}</Menu.Dropdown>
+      <Menu.Dropdown
+        className="overflow-y-auto"
+        style={{ maxHeight: 'calc(100dvh - 80px)' }}
+      >
+        {menuItems}
+      </Menu.Dropdown>
     </Menu>
   );
 }
