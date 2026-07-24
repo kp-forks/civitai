@@ -1185,6 +1185,9 @@ export async function softDeleteUser({ id, userId }: { id: number; userId: numbe
     isModerator: false,
     userId,
     force: true,
+    // Skip toggleBan's Moderated block; softDeleteUser applies its own CSAM
+    // block below. Avoids a redundant double-write and a Moderated->CSAM flip.
+    removeContent: false,
   });
 
   await dbWrite.image.updateMany({
@@ -1699,6 +1702,7 @@ export const toggleBan = async ({
   userId,
   isModerator,
   force,
+  removeContent,
 }: ToggleBanUser & { userId: number; isModerator?: boolean; force?: boolean }) => {
   // Get user with username for search index deletion
   const user = await getUserById({
@@ -1783,6 +1787,33 @@ export const toggleBan = async ({
         ),
       ]),
     ]);
+
+    // Opt-in "remove all content": block (not delete) the banned user's images,
+    // defaulting ON for SexualMinor bans. Blocking (Moderated) preserves the
+    // 7-day appeal window — the remove-blocked-images job hard-deletes them
+    // after that. CSAM semantics stay reserved for the softDeleteUser path.
+    const shouldRemoveContent =
+      removeContent === true ||
+      (reasonCode === BanReasonCode.SexualMinor && removeContent !== false);
+    if (shouldRemoveContent) {
+      try {
+        await dbWrite.image.updateMany({
+          where: { userId: id, ingestion: { not: 'Blocked' } },
+          data: {
+            ingestion: 'Blocked',
+            nsfwLevel: NsfwLevel.Blocked,
+            blockedFor: BlockedReason.Moderated,
+          },
+        });
+      } catch (error) {
+        logToAxiom({
+          type: 'error',
+          name: 'ban-user-remove-content',
+          message: (error as Error).message,
+          error,
+        });
+      }
+    }
   } else {
     // Unbanning: reverse the at-period-end cancellation applied on ban, if the
     // membership is still within its paid period.
@@ -1833,6 +1864,13 @@ export const toggleBan = async ({
   }
 
   return updatedUser;
+};
+
+export const getBanContentPreview = async ({ userId }: { userId: number }) => {
+  const imageCount = await dbRead.image.count({
+    where: { userId, ingestion: { not: 'Blocked' } },
+  });
+  return { imageCount };
 };
 
 export const toggleContestBan = async ({
