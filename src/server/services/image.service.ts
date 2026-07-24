@@ -64,6 +64,7 @@ import {
 import { postMetrics } from '~/server/metrics';
 import {
   clickhouseFailSoftCounter,
+  imageScanSubmittedCounter,
   leakingContentCounter,
   registerCounter,
   registerCounterWithLabels,
@@ -900,6 +901,7 @@ export const ingestImage = async ({
       priority: lowPriority ? 'low' : undefined,
     });
     if (!workflowResponse) {
+      imageScanSubmittedCounter.inc({ lane: 'new', result: 'failed' });
       // The orchestrator submit already logs the transient failure in
       // createImageIngestionRequest, but from here it's otherwise a silent
       // `return false` — surface it at the dispatch layer so the failure is
@@ -927,6 +929,7 @@ export const ingestImage = async ({
           END
         WHERE id = ${id}
       `;
+    imageScanSubmittedCounter.inc({ lane: 'new', result: 'success' });
     return true;
   }
 
@@ -979,6 +982,7 @@ export const ingestImage = async ({
       `;
     }
 
+    imageScanSubmittedCounter.inc({ lane: 'legacy', result: 'success' });
     return true;
   } else {
     await logToAxiom({
@@ -989,6 +993,7 @@ export const ingestImage = async ({
       responseStatus: response.status,
     });
 
+    imageScanSubmittedCounter.inc({ lane: 'legacy', result: 'failed' });
     return false;
   }
 };
